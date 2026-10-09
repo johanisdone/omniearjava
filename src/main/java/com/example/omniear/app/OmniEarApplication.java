@@ -12,9 +12,12 @@ import com.example.omniear.detection.MappedScores;
 import com.example.omniear.detection.ScoreMapper;
 import com.example.omniear.detection.TemporalDecisionEngine;
 import com.example.omniear.detection.ThreatEvent;
+import com.example.omniear.eval.EvaluationHarness;
+import com.example.omniear.eval.EvaluationReport;
 import com.example.omniear.model.CedMiniThreatModel;
 import com.example.omniear.model.ModelConfig;
 import com.example.omniear.model.ModelPrediction;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -34,6 +37,8 @@ import org.slf4j.LoggerFactory;
  *   --list-devices                 list capture devices
  *   --file &lt;wav&gt;                   replay a WAV through the live pipeline
  *   --mic [device name substring]  capture from a microphone
+ *   --eval &lt;dataset dir&gt;           run the evaluation harness (needs labels.csv)
+ *   --eval-out &lt;path&gt;              where to write the JSON report
  *   --models &lt;dir&gt;                 model directory (default: models)
  * </pre>
  */
@@ -61,6 +66,8 @@ public final class OmniEarApplication {
         String modelsDir = "models";
         String file = null;
         String device = null;
+        String evalDir = null;
+        String evalOut = null;
         boolean useMic = false;
         boolean listDevices = false;
 
@@ -68,6 +75,8 @@ public final class OmniEarApplication {
             switch (args[i]) {
                 case "--models" -> modelsDir = args[++i];
                 case "--file" -> file = args[++i];
+                case "--eval" -> evalDir = args[++i];
+                case "--eval-out" -> evalOut = args[++i];
                 case "--mic" -> {
                     useMic = true;
                     if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
@@ -94,13 +103,25 @@ public final class OmniEarApplication {
         DetectionConfig detectionConfig = DetectionConfig.loadDefault();
         OmniEarApplication app = new OmniEarApplication(modelConfig, detectionConfig, Path.of(modelsDir));
 
-        if (file != null) {
+        if (evalDir != null) {
+            app.runEvaluation(Path.of(evalDir), evalOut == null ? null : Path.of(evalOut));
+        } else if (file != null) {
             app.runFile(Path.of(file));
         } else if (useMic) {
             app.runMicrophone(device);
         } else {
-            System.err.println("nothing to do: pass --file <wav> or --mic [device] (or --list-devices)");
+            System.err.println("nothing to do: pass --file <wav>, --mic [device], or --eval <dir>");
         }
+    }
+
+    public void runEvaluation(Path datasetDir, Path reportOut) throws Exception {
+        LOG.info("evaluating dataset {}", datasetDir.toAbsolutePath());
+        EvaluationHarness harness = new EvaluationHarness(modelConfig, detectionConfig, modelsDir);
+        EvaluationReport report = harness.run(datasetDir);
+        report.print();
+        Path out = reportOut != null ? reportOut : datasetDir.resolve("eval-report.json");
+        Files.writeString(out, report.toJson());
+        System.out.println("\nwrote " + out.toAbsolutePath());
     }
 
     public void runFile(Path wav) throws Exception {

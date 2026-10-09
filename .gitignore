@@ -7,3 +7,4 @@ reference/*.json.tmp
 *.log
 .idea/
 *.iml
+eval/eval-report.json

@@ -1,0 +1,6 @@
+file,label,onsetMs
+../src/test/resources/audio/tone_sweep_3s.wav,SIREN,0
+../src/test/resources/audio/silence_2s.wav,NORMAL,
+../src/test/resources/audio/noise_2s.wav,NORMAL,
+../src/test/resources/audio/mixed_4s.wav,NORMAL,
+../src/test/resources/audio/impulses_3s.wav,NORMAL,

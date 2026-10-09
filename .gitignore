@@ -1,0 +1,9 @@
+target/
+.tools/
+.venv-ref/
+reference/__pycache__/
+reference/realtest/
+reference/*.json.tmp
+*.log
+.idea/
+*.iml

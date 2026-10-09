@@ -1,0 +1,25 @@
+ShantyCam AudioDet (CED-mini)
+Copyright 2026 ShantyCam
+
+This product includes and builds upon third-party components:
+
+1. CED — Consistent Ensemble Distillation audio-tagging models
+   Copyright Xiaomi Corp. / RicherMans (https://github.com/RicherMans/CED)
+   Redistributed on Hugging Face as `mispeech/ced-mini`.
+   Licensed under the Apache License, Version 2.0.
+   The files `ced-mini-q8.gguf` and `ced-mini-f16.gguf` are GGUF-quantized
+   derivatives of the `mispeech/ced-mini` weights. Unmodified in architecture;
+   converted to GGUF and quantized (q8_0 / f16) for CPU inference.
+
+2. ced.cpp — C++/ggml inference port and GGUF conversion tooling for CED
+   Copyright (c) 2026 the ced.cpp authors (https://github.com/localai-org/ced.cpp)
+   Licensed under the MIT License.
+   Used to convert the backbone to GGUF and to run inference (`ced-batch`).
+   The canonical GGUF distribution of the CED family is `mudler/ced-gguf`.
+
+The ShantyCam classifier heads (`heads/`, `onnx/`) and the training/synthesis
+recipe (`recipe/`) are original works of ShantyCam, licensed under the
+Apache License, Version 2.0.
+
+You may obtain a copy of the Apache License 2.0 at:
+    http://www.apache.org/licenses/LICENSE-2.0

@@ -17,6 +17,7 @@ import com.example.omniear.eval.EvaluationReport;
 import com.example.omniear.model.CedMiniThreatModel;
 import com.example.omniear.model.ModelConfig;
 import com.example.omniear.model.ModelPrediction;
+import com.example.omniear.ui.OmniEarFrame;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -27,6 +28,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.LineUnavailableException;
+import javax.swing.SwingUtilities;
+import javax.swing.UIManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,7 +39,8 @@ import org.slf4j.LoggerFactory;
  * <pre>
  *   --list-devices                 list capture devices
  *   --file &lt;wav&gt;                   replay a WAV through the live pipeline
- *   --mic [device name substring]  capture from a microphone
+ *   --mic [device name substring]  capture from a microphone (console)
+ *   --gui [device name substring]  live dashboard window
  *   --eval &lt;dataset dir&gt;           run the evaluation harness (needs labels.csv)
  *   --eval-out &lt;path&gt;              where to write the JSON report
  *   --models &lt;dir&gt;                 model directory (default: models)
@@ -69,6 +73,7 @@ public final class OmniEarApplication {
         String evalDir = null;
         String evalOut = null;
         boolean useMic = false;
+        boolean useGui = false;
         boolean listDevices = false;
 
         for (int i = 0; i < args.length; i++) {
@@ -79,6 +84,12 @@ public final class OmniEarApplication {
                 case "--eval-out" -> evalOut = args[++i];
                 case "--mic" -> {
                     useMic = true;
+                    if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
+                        device = args[++i];
+                    }
+                }
+                case "--gui" -> {
+                    useGui = true;
                     if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
                         device = args[++i];
                     }
@@ -109,8 +120,10 @@ public final class OmniEarApplication {
             app.runFile(Path.of(file));
         } else if (useMic) {
             app.runMicrophone(device);
+        } else if (useGui) {
+            app.runGui(device);
         } else {
-            System.err.println("nothing to do: pass --file <wav>, --mic [device], or --eval <dir>");
+            System.err.println("nothing to do: pass --file <wav>, --mic [device], --gui [device], or --eval <dir>");
         }
     }
 
@@ -130,6 +143,20 @@ public final class OmniEarApplication {
             run(source, true);
         }
         printSummary("file");
+    }
+
+    public void runGui(String device) throws Exception {
+        try {
+            UIManager.setLookAndFeel("javax.swing.plaf.nimbus.NimbusLookAndFeel");
+        } catch (Exception ignored) {
+            // fall back to the default look and feel
+        }
+        SwingUtilities.invokeAndWait(() -> {
+            OmniEarFrame frame = new OmniEarFrame(modelConfig, detectionConfig, modelsDir);
+            frame.selectDevice(device);
+            frame.setVisible(true);
+            frame.startListening();
+        });
     }
 
     public void runMicrophone(String device) throws Exception {

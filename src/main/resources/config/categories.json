@@ -4,42 +4,42 @@
     {
       "category": "SCREAM_DISTRESS",
       "labels": { "scream": 1.0 },
-      "threshold": 0.994,
+      "threshold": 0.91,
       "confirmWindows": 2,
       "cooldownMs": 5000
     },
     {
       "category": "GUNSHOT",
       "labels": { "gunshot": 1.0 },
-      "threshold": 0.891,
+      "threshold": 0.995,
       "confirmWindows": 2,
       "cooldownMs": 3000
     },
     {
       "category": "EXPLOSION",
       "labels": { "explosion": 1.0 },
-      "threshold": 0.992,
+      "threshold": 0.88,
       "confirmWindows": 2,
       "cooldownMs": 5000
     },
     {
       "category": "IMPACT_CRASH",
       "labels": { "vehicle_crash": 1.0, "knock": 0.5 },
-      "threshold": 0.992,
+      "threshold": 0.9995,
       "confirmWindows": 2,
       "cooldownMs": 5000
     },
     {
       "category": "SIREN",
       "labels": { "siren": 1.0 },
-      "threshold": 0.601,
+      "threshold": 0.715,
       "confirmWindows": 2,
       "cooldownMs": 10000
     },
     {
       "category": "GLASS_BREAK",
       "labels": { "glass": 1.0 },
-      "threshold": 0.77,
+      "threshold": 0.999,
       "confirmWindows": 2,
       "cooldownMs": 3000
     }

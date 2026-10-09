@@ -8,5 +8,7 @@ reference/*.json.tmp
 .idea/
 *.iml
 eval/eval-report.json
+eval-report.json
 eval-real/
 .datasets-cache/
+.head_train/

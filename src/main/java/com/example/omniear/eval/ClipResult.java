@@ -25,4 +25,12 @@ public record ClipResult(
     public long countAlerts() {
         return events.size();
     }
+
+    /**
+     * Clip-level correctness: a NORMAL clip is correct if no alert fired; a threat
+     * clip is correct if its own label category fired.
+     */
+    public boolean correct() {
+        return label == ThreatCategory.NORMAL ? events.isEmpty() : fired(label);
+    }
 }

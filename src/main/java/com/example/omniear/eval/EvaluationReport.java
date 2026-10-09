@@ -33,6 +33,11 @@ public final class EvaluationReport {
 
     public double macroF1;
 
+    public double clipAccuracy;
+    public int correctClips;
+    public int falseAlarmClips;
+    public int missedClips;
+
     public double preprocessMsPerWindow;
     public double inferenceMsPerWindow;
     public double decisionMsPerWindow;
@@ -80,6 +85,23 @@ public final class EvaluationReport {
             }
         }
         r.macroF1 = counted > 0 ? f1Sum / counted : 0;
+
+        int correct = 0;
+        int falseAlarmClips = 0;
+        int missedClips = 0;
+        for (ClipResult c : results) {
+            if (c.correct()) {
+                correct++;
+            } else if (c.label() == ThreatCategory.NORMAL) {
+                falseAlarmClips++;
+            } else {
+                missedClips++;
+            }
+        }
+        r.correctClips = correct;
+        r.falseAlarmClips = falseAlarmClips;
+        r.missedClips = missedClips;
+        r.clipAccuracy = results.isEmpty() ? 0 : (double) correct / results.size();
         return r;
     }
 
@@ -125,6 +147,8 @@ public final class EvaluationReport {
                 clips, positiveClips, negativeClips, negativeDurationMs / 3_600_000.0);
         System.out.printf("false alerts/hour (on NORMAL clips): %.2f  (total=%d)  macroF1=%.3f%n",
                 falseAlertsPerHour, totalFalseAlerts, macroF1);
+        System.out.printf("clip accuracy: %.3f  (%d/%d correct; %d false-alarm clips, %d missed)%n",
+                clipAccuracy, correctClips, clips, falseAlarmClips, missedClips);
         System.out.printf("per-window ms: preprocess=%.2f  inference=%.2f  decision=%.2f%n",
                 preprocessMsPerWindow, inferenceMsPerWindow, decisionMsPerWindow);
         System.out.println();

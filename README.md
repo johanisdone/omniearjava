@@ -31,8 +31,9 @@ then run:
 java -jar omniear.jar --gui
 ```
 
-Requires **Java 21 or newer** (`java -version`). On first launch the app opens
-your default microphone; use the device picker to choose another input.
+Requires **Java 21 or newer** (`java -version`). The jar bundles the ONNX model,
+so no extra files are needed. On first launch the app opens your default
+microphone; use the device picker to choose another input.
 
 Project site: <https://johanisdone.github.io/omniearjava/> (served from `docs/`
 via GitHub Pages).

@@ -85,4 +85,15 @@ class CedMiniThreatModelParityTest {
         ModelConfig config = ModelConfig.loadDefault();
         assertEquals(golden.classes, config.classes, "class order must match reference");
     }
+
+    @Test
+    void loadsBundledModelWhenFilesAreAbsent() throws Exception {
+        ModelConfig config = ModelConfig.loadDefault();
+        Path absent = Path.of("build", "no-such-models-dir");
+        try (CedMiniThreatModel model = CedMiniThreatModel.fromModelsDir(absent, config)) {
+            assertNotNull(model);
+            ModelPrediction p = model.predict(new float[config.windowSamples()]);
+            assertEquals(config.classes.size(), p.scores().length);
+        }
+    }
 }

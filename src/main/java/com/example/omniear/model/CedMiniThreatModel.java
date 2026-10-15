@@ -4,6 +4,8 @@ import ai.onnxruntime.OnnxTensor;
 import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtException;
 import ai.onnxruntime.OrtSession;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.FloatBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -31,13 +33,14 @@ public final class CedMiniThreatModel implements ThreatModel {
     private final ModelConfig config;
     private final int windowSamples;
 
+    /**
+     * Loads the model from {@code modelsDir}, falling back to the ONNX graphs
+     * bundled inside the jar when the files are not present on disk. This keeps
+     * the shaded jar runnable on its own.
+     */
     public static CedMiniThreatModel fromModelsDir(Path modelsDir, ModelConfig config)
             throws OrtException {
-        return new CedMiniThreatModel(
-                OrtEnvironment.getEnvironment(),
-                modelsDir.resolve("ced-mini.onnx"),
-                modelsDir.resolve("onnx").resolve("head.onnx"),
-                config);
+        return new CedMiniThreatModel(OrtEnvironment.getEnvironment(), modelsDir, config);
     }
 
     public CedMiniThreatModel(Path backboneOnnx, Path headOnnx, ModelConfig config)
@@ -56,6 +59,38 @@ public final class CedMiniThreatModel implements ThreatModel {
         this.head = env.createSession(headOnnx.toString(), new OrtSession.SessionOptions());
         this.backboneInput = backbone.getInputNames().iterator().next();
         this.headInput = head.getInputNames().iterator().next();
+    }
+
+    private CedMiniThreatModel(OrtEnvironment env, Path modelsDir, ModelConfig config)
+            throws OrtException {
+        this.env = env;
+        this.config = config;
+        this.windowSamples = config.windowSamples();
+        this.backbone = openSession(modelsDir.resolve("ced-mini.onnx"), "/models/ced-mini.onnx");
+        this.head = openSession(modelsDir.resolve("onnx").resolve("head.onnx"), "/models/onnx/head.onnx");
+        this.backboneInput = backbone.getInputNames().iterator().next();
+        this.headInput = head.getInputNames().iterator().next();
+    }
+
+    private OrtSession openSession(Path file, String resource) throws OrtException {
+        if (Files.isRegularFile(file)) {
+            return env.createSession(file.toString(), new OrtSession.SessionOptions());
+        }
+        byte[] bytes = readResource(resource);
+        if (bytes == null) {
+            throw new IllegalStateException(
+                    "missing model file " + file.toAbsolutePath()
+                            + " and classpath resource " + resource);
+        }
+        return env.createSession(bytes, new OrtSession.SessionOptions());
+    }
+
+    private static byte[] readResource(String resource) {
+        try (InputStream in = CedMiniThreatModel.class.getResourceAsStream(resource)) {
+            return in == null ? null : in.readAllBytes();
+        } catch (IOException e) {
+            throw new IllegalStateException("failed to read classpath resource " + resource, e);
+        }
     }
 
     private static void require(Path p) {

@@ -56,6 +56,19 @@
 
   <build>
     <finalName>omniear</finalName>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <resource>
+        <directory>models</directory>
+        <targetPath>models</targetPath>
+        <includes>
+          <include>ced-mini.onnx</include>
+          <include>onnx/head.onnx</include>
+        </includes>
+      </resource>
+    </resources>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

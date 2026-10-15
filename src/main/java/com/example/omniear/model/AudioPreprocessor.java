@@ -108,6 +108,42 @@ public final class AudioPreprocessor {
         return a;
     }
 
+    /**
+     * Peak-normalize a window toward {@code target} before it reaches the model.
+     *
+     * <p>CED-mini expects audio close to full scale; laptop/phone-microphone chains
+     * often deliver events at a small fraction of full scale (measured live here at
+     * peak ~0.08), which the model misclassifies (gunshots heard as generic impacts).
+     * Windows quieter than {@code floor} are left untouched so silence and low-level
+     * room noise are not amplified into hallucinations. Gain is capped at
+     * {@code maxGain}.
+     */
+    public static float[] normalizePeak(float[] window) {
+        return normalizePeak(window, 0.02f, 0.9f, 30f);
+    }
+
+    public static float[] normalizePeak(float[] window, float floor, float target, float maxGain) {
+        float peak = 0f;
+        for (float v : window) {
+            peak = Math.max(peak, Math.abs(v));
+        }
+        if (peak < floor) {
+            return window;
+        }
+        float gain = target / peak;
+        if (gain > maxGain) {
+            gain = maxGain;
+        }
+        if (gain <= 1.001f) {
+            return window;
+        }
+        float[] out = new float[window.length];
+        for (int i = 0; i < window.length; i++) {
+            out[i] = Math.max(-1f, Math.min(1f, window[i] * gain));
+        }
+        return out;
+    }
+
     /** Extract a single window of exactly {@code window} samples, zero-padded. */
     public static float[] window(float[] samples, int offset, int window) {
         float[] out = new float[window];

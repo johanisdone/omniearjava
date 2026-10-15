@@ -8,25 +8,34 @@ import com.example.omniear.audio.AudioWindow;
 import com.example.omniear.audio.FileAudioSource;
 import com.example.omniear.audio.MicrophoneSource;
 import com.example.omniear.detection.DetectionConfig;
+import com.example.omniear.detection.GlassBreakDetector;
 import com.example.omniear.detection.MappedScores;
 import com.example.omniear.detection.ScoreMapper;
 import com.example.omniear.detection.TemporalDecisionEngine;
+import com.example.omniear.detection.ThreatCategory;
 import com.example.omniear.detection.ThreatEvent;
 import com.example.omniear.eval.EvaluationHarness;
 import com.example.omniear.eval.EvaluationReport;
+import com.example.omniear.model.AudioPreprocessor;
 import com.example.omniear.model.CedMiniThreatModel;
 import com.example.omniear.model.ModelConfig;
 import com.example.omniear.model.ModelPrediction;
 import com.example.omniear.ui.OmniEarFrame;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import javax.sound.sampled.AudioFileFormat;
 import javax.sound.sampled.AudioFormat;
+import javax.sound.sampled.AudioInputStream;
+import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.LineUnavailableException;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
@@ -41,6 +50,8 @@ import org.slf4j.LoggerFactory;
  *   --file &lt;wav&gt;                   replay a WAV through the live pipeline
  *   --mic [device name substring]  capture from a microphone (console)
  *   --gui [device name substring]  live dashboard window
+ *   --record &lt;wav&gt;                 capture mic audio to a WAV (see --seconds)
+ *   --seconds &lt;n&gt;                  record length for --record (default 6)
  *   --eval &lt;dataset dir&gt;           run the evaluation harness (needs labels.csv)
  *   --eval-out &lt;path&gt;              where to write the JSON report
  *   --models &lt;dir&gt;                 model directory (default: models)
@@ -55,6 +66,8 @@ public final class OmniEarApplication {
     private final DetectionConfig detectionConfig;
     private final Path modelsDir;
     private final AlertSink sink = new ConsoleAlertSink();
+
+    private final GlassBreakDetector glassBreakDetector = new GlassBreakDetector();
 
     private final AtomicLong windowsProcessed = new AtomicLong();
     private final AtomicLong windowsDropped = new AtomicLong();
@@ -72,6 +85,9 @@ public final class OmniEarApplication {
         String device = null;
         String evalDir = null;
         String evalOut = null;
+        String recordPath = null;
+        double seconds = 6.0;
+        int captureRate = 0;
         boolean useMic = false;
         boolean useGui = false;
         boolean listDevices = false;
@@ -82,6 +98,14 @@ public final class OmniEarApplication {
                 case "--file" -> file = args[++i];
                 case "--eval" -> evalDir = args[++i];
                 case "--eval-out" -> evalOut = args[++i];
+                case "--record" -> {
+                    recordPath = args[++i];
+                    if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
+                        device = args[++i];
+                    }
+                }
+                case "--seconds" -> seconds = Double.parseDouble(args[++i]);
+                case "--rate" -> captureRate = Integer.parseInt(args[++i]);
                 case "--mic" -> {
                     useMic = true;
                     if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
@@ -118,6 +142,8 @@ public final class OmniEarApplication {
             app.runEvaluation(Path.of(evalDir), evalOut == null ? null : Path.of(evalOut));
         } else if (file != null) {
             app.runFile(Path.of(file));
+        } else if (recordPath != null) {
+            app.runRecord(Path.of(recordPath), seconds, device, captureRate);
         } else if (useMic) {
             app.runMicrophone(device);
         } else if (useGui) {
@@ -143,6 +169,35 @@ public final class OmniEarApplication {
             run(source, true);
         }
         printSummary("file");
+    }
+
+    public void runRecord(Path out, double seconds, String device, int captureRate) throws Exception {
+        float rate = captureRate > 0 ? captureRate : modelConfig.sr;
+        AudioFormat desired = new AudioFormat(
+                AudioFormat.Encoding.PCM_SIGNED, rate, 16, 1, 2, rate, false);
+        LOG.info("recording {}s from {} ...", seconds, device == null ? "default device" : device);
+        try (MicrophoneSource source = new MicrophoneSource(desired, device);
+             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[4096];
+            long deadline = System.nanoTime() + (long) (seconds * 1_000_000_000L);
+            while (System.nanoTime() < deadline) {
+                int n = source.read(buf, 0, buf.length);
+                if (n > 0) {
+                    bos.write(buf, 0, n);
+                }
+            }
+            byte[] data = bos.toByteArray();
+            AudioFormat fmt = source.format();
+            int frameSize = fmt.getFrameSize();
+            try (AudioInputStream ais =
+                         new AudioInputStream(new ByteArrayInputStream(data), fmt, data.length / frameSize)) {
+                AudioSystem.write(ais, AudioFileFormat.Type.WAVE, out.toFile());
+            }
+            System.out.println("wrote " + out.toAbsolutePath()
+                    + "  frames=" + (data.length / frameSize)
+                    + "  rate=" + fmt.getSampleRate()
+                    + "  channels=" + fmt.getChannels());
+        }
     }
 
     public void runGui(String device) throws Exception {
@@ -177,7 +232,11 @@ public final class OmniEarApplication {
     }
 
     private void run(AudioSource source, boolean waitForCompletion) throws Exception {
-        BlockingQueue<AudioWindow> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
+        // File replay must be lossless (every window evaluated); live capture drops
+        // stale windows so inference can keep up with real time.
+        BlockingQueue<AudioWindow> queue = waitForCompletion
+                ? new LinkedBlockingQueue<>()
+                : new ArrayBlockingQueue<>(QUEUE_CAPACITY);
         AtomicBoolean captureEnded = new AtomicBoolean(false);
 
         try (CedMiniThreatModel model = CedMiniThreatModel.fromModelsDir(modelsDir, modelConfig)) {
@@ -240,11 +299,15 @@ public final class OmniEarApplication {
                          ScoreMapper mapper,
                          TemporalDecisionEngine engine) {
         long t0 = System.nanoTime();
-        ModelPrediction prediction = model.predict(window.samples());
+        ModelPrediction prediction = model.predict(AudioPreprocessor.normalizePeak(window.samples()));
         long inferMs = (System.nanoTime() - t0) / 1_000_000;
         windowsProcessed.incrementAndGet();
 
         MappedScores mapped = mapper.map(prediction);
+        if (glassBreakDetector.detects(window.samples())) {
+            mapped = mapped.withScore(ThreatCategory.GLASS_BREAK, 1f, "glass(hf)");
+            LOG.debug("glass-break detector fired (t={}ms)", window.timestampMs());
+        }
         List<ThreatEvent> events = engine.update(window.timestampMs(), mapped);
         for (ThreatEvent event : events) {
             long latencyMs = event.emittedWallMs() - window.capturedWallMs();

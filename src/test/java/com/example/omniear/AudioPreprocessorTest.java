@@ -2,6 +2,7 @@ package com.example.omniear;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 import com.example.omniear.model.AudioPreprocessor;
 import com.example.omniear.model.ModelConfig;
@@ -38,6 +39,31 @@ class AudioPreprocessorTest {
         float[] out = AudioPreprocessor.resampleLinear(in, 8000, 16000);
         assertEquals(200, out.length);
         assertEquals(0f, out[0], 1e-6);
+    }
+
+    @Test
+    void normalizePeakAmplifiesQuietWindowTowardTarget() {
+        float[] in = {0.04f, -0.02f};
+        float[] out = AudioPreprocessor.normalizePeak(in);
+        assertArrayEquals(new float[]{0.9f, -0.45f}, out, 1e-6f);
+    }
+
+    @Test
+    void normalizePeakLeavesBelowFloorWindowUntouched() {
+        float[] in = {0.005f, -0.003f};
+        assertSame(in, AudioPreprocessor.normalizePeak(in));
+    }
+
+    @Test
+    void normalizePeakLeavesNearFullScaleWindowUntouched() {
+        float[] in = {0.95f, -0.9f};
+        assertSame(in, AudioPreprocessor.normalizePeak(in));
+    }
+
+    @Test
+    void normalizePeakCapsGainAtMax() {
+        float[] out = AudioPreprocessor.normalizePeak(new float[]{0.02f}, 0.02f, 0.9f, 10f);
+        assertArrayEquals(new float[]{0.2f}, out, 1e-6f);
     }
 
     @Test

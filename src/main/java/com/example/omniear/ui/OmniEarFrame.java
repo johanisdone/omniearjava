@@ -5,11 +5,13 @@ import com.example.omniear.audio.AudioWindow;
 import com.example.omniear.audio.MicrophoneSource;
 import com.example.omniear.detection.CategoryRule;
 import com.example.omniear.detection.DetectionConfig;
+import com.example.omniear.detection.GlassBreakDetector;
 import com.example.omniear.detection.MappedScores;
 import com.example.omniear.detection.ScoreMapper;
 import com.example.omniear.detection.TemporalDecisionEngine;
 import com.example.omniear.detection.ThreatCategory;
 import com.example.omniear.detection.ThreatEvent;
+import com.example.omniear.model.AudioPreprocessor;
 import com.example.omniear.model.CedMiniThreatModel;
 import com.example.omniear.model.ModelConfig;
 import com.example.omniear.model.ModelPrediction;
@@ -54,6 +56,8 @@ import javax.swing.Timer;
 import javax.swing.WindowConstants;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Live microphone dashboard for the OmniEar pipeline: device picker, input-level
@@ -63,6 +67,11 @@ import javax.swing.table.DefaultTableModel;
  * update is marshalled onto the Swing event thread.
  */
 public final class OmniEarFrame extends JFrame {
+
+    private static final Logger LOG = LoggerFactory.getLogger(OmniEarFrame.class);
+
+    /** Windows whose strongest category score reaches this are logged for diagnosis. */
+    private static final float DIAG_FLOOR = 0.2f;
 
     private static final Color BG = new Color(0x16161c);
     private static final Color PANEL = new Color(0x1f1f28);
@@ -90,6 +99,8 @@ public final class OmniEarFrame extends JFrame {
         CATEGORY_NAMES.put(ThreatCategory.SIREN, "SIREN");
         CATEGORY_NAMES.put(ThreatCategory.GLASS_BREAK, "GLASS BREAK");
     }
+
+    private static final GlassBreakDetector GLASS_DETECTOR = new GlassBreakDetector();
 
     private final ModelConfig modelConfig;
     private final DetectionConfig detectionConfig;
@@ -375,16 +386,24 @@ public final class OmniEarFrame extends JFrame {
             if (window == null) {
                 continue;
             }
-            ModelPrediction prediction = model.predict(window.samples());
+            float[] raw = window.samples();
+            ModelPrediction prediction = model.predict(AudioPreprocessor.normalizePeak(raw));
             MappedScores mapped = mapper.map(prediction);
+            if (GLASS_DETECTOR.detects(raw)) {
+                mapped = mapped.withScore(ThreatCategory.GLASS_BREAK, 1f, "glass(hf)");
+            }
             List<ThreatEvent> events = engine.update(window.timestampMs(), mapped);
             windows.incrementAndGet();
 
-            float db = (float) (20 * Math.log10(Math.max(rms(window.samples()), 1e-6)));
-            float peakDb = (float) (20 * Math.log10(Math.max(peak(window.samples()), 1e-6)));
+            float db = (float) (20 * Math.log10(Math.max(rms(raw), 1e-6)));
+            float peakDb = (float) (20 * Math.log10(Math.max(peak(raw), 1e-6)));
             float level = normalizeDb(db);
             float peakLevel = normalizeDb(peakDb);
-            SwingUtilities.invokeLater(() -> updateLive(level, peakLevel, mapped, events));
+            if (mapped.strongestScore() >= DIAG_FLOOR) {
+                logDiagnostics(prediction, mapped, db, peakDb);
+            }
+            MappedScores mappedForUi = mapped;
+            SwingUtilities.invokeLater(() -> updateLive(level, peakLevel, mappedForUi, events));
         }
     }
 
@@ -402,6 +421,25 @@ public final class OmniEarFrame extends JFrame {
         }
         stats.setText(String.format("windows=%d  dropped=%d  alerts=%d",
                 windows.get(), dropped.get(), alerts.get()));
+    }
+
+    private void logDiagnostics(ModelPrediction prediction, MappedScores mapped, float rmsDb, float peakDb) {
+        StringBuilder cats = new StringBuilder();
+        for (CategoryRule rule : detectionConfig.categories) {
+            ThreatCategory cat = rule.category();
+            cats.append(cat.name()).append('=')
+                    .append(String.format("%.2f", mapped.score(cat))).append(' ');
+        }
+        StringBuilder top = new StringBuilder();
+        for (Map.Entry<String, Float> e : prediction.topK(3)) {
+            top.append(e.getKey()).append('=').append(String.format("%.3f", e.getValue())).append(' ');
+        }
+        LOG.info("diag rms={}dB peak={}dB strongest={} [{}] top: {}",
+                String.format("%.0f", rmsDb),
+                String.format("%.0f", peakDb),
+                String.format("%.3f", mapped.strongestScore()),
+                cats.toString().trim(),
+                top.toString().trim());
     }
 
     private void addAlertRow(ThreatEvent event) {

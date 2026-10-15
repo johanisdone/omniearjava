@@ -1,5 +1,6 @@
 package com.example.omniear.detection;
 
+import java.util.EnumMap;
 import java.util.Map;
 
 /**
@@ -11,6 +12,15 @@ public record MappedScores(Map<ThreatCategory, Float> scores,
 
     public float score(ThreatCategory category) {
         return scores.getOrDefault(category, 0f);
+    }
+
+    /** Returns a copy with {@code category} raised to at least {@code value}. */
+    public MappedScores withScore(ThreatCategory category, float value, String label) {
+        Map<ThreatCategory, Float> raisedScores = new EnumMap<>(scores);
+        Map<ThreatCategory, String> raisedLabels = new EnumMap<>(drivingLabels);
+        raisedScores.put(category, Math.max(raisedScores.getOrDefault(category, 0f), value));
+        raisedLabels.put(category, label);
+        return new MappedScores(raisedScores, raisedLabels);
     }
 
     public ThreatCategory strongest() {

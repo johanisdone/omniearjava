@@ -22,14 +22,17 @@ import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
-import java.awt.GridLayout;
 import java.awt.RenderingHints;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -40,28 +43,45 @@ import java.util.concurrent.atomic.AtomicLong;
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.LineUnavailableException;
 import javax.swing.BorderFactory;
+import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.DefaultComboBoxModel;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
+import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JTabbedPane;
 import javax.swing.JTable;
+import javax.swing.JTextArea;
+import javax.swing.JTextField;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 import javax.swing.WindowConstants;
+import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Live microphone dashboard for the OmniEar pipeline: device picker, input-level
- * meter, per-category score bars with threshold markers, and a rolling alert log.
+ * OmniEar dashboard: a tabbed window with live monitoring, offline WAV testing
+ * and a session alert history.
+ *
+ * <ul>
+ *   <li><b>Dashboard</b> - device picker, mode/readiness banner, input level
+ *       meter, a five-second microphone input diagnostic and per-category score
+ *       bars with threshold markers.</li>
+ *   <li><b>WAV Testing</b> - classify the loudest window of any WAV, or replay
+ *       the whole file through the live decision pipeline.</li>
+ *   <li><b>Alert History</b> - rolling alert log (P0/P1/P4 priorities) with a
+ *       UTF-8 CSV export.</li>
+ * </ul>
  *
  * <p>The model, decision engine and capture run on background threads; every
  * update is marshalled onto the Swing event thread.
@@ -80,6 +100,7 @@ public final class OmniEarFrame extends JFrame {
     private static final Color MUTED = new Color(0x9a9aad);
     private static final Color OK = new Color(0x2fbf71);
     private static final Color ALERT = new Color(0xe5484d);
+    private static final Color WARN = new Color(0xffb74d);
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
 
     private static final Map<ThreatCategory, Color> CATEGORY_COLORS = new EnumMap<>(ThreatCategory.class);
@@ -110,20 +131,33 @@ public final class OmniEarFrame extends JFrame {
     private final JComboBox<String> deviceCombo = new JComboBox<>();
     private final JButton startStop = new JButton("Start listening");
     private final JLabel banner = new JLabel("IDLE", SwingConstants.CENTER);
+    private final JLabel modeWarning = new JLabel(" ");
     private final JLabel status = new JLabel("Ready");
     private final JLabel stats = new JLabel(" ");
     private final LevelMeter levelMeter = new LevelMeter();
     private final Map<ThreatCategory, ScoreBar> bars = new EnumMap<>(ThreatCategory.class);
+
+    private final JButton diagButton = new JButton("Run 5 s input diagnostic");
+    private final JLabel diagResult = new JLabel(" ");
+
+    private final JTextField wavPath = new JTextField();
+    private final JButton wavBrowse = new JButton("Browse...");
+    private final JButton wavClassify = new JButton("Classify WAV");
+    private final JButton wavAnalyze = new JButton("Analyze WAV");
+    private final JTextArea wavResult = new JTextArea();
+
     private final DefaultTableModel alertModel = new DefaultTableModel(
-            new Object[] {"Time", "Category", "Score", "Dur", "Label"}, 0) {
+            new Object[] {"Time", "P", "Category", "Score", "Dur", "Label"}, 0) {
         @Override
         public boolean isCellEditable(int row, int column) {
             return false;
         }
     };
     private final JTable alertTable = new JTable(alertModel);
+    private final JLabel alertCount = new JLabel("0 alerts");
 
     private volatile CedMiniThreatModel model;
+    private volatile CedMiniThreatModel testModel;
     private volatile MicrophoneSource source;
     private volatile AudioCaptureService capture;
     private volatile Thread worker;
@@ -147,12 +181,23 @@ public final class OmniEarFrame extends JFrame {
         buildUi();
     }
 
+    // ---- layout -------------------------------------------------------------
+
     private void buildUi() {
         JPanel root = new JPanel(new BorderLayout(12, 12));
         root.setBackground(BG);
         root.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
         root.add(buildToolbar(), BorderLayout.NORTH);
-        root.add(buildCenter(), BorderLayout.CENTER);
+
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.setBackground(PANEL);
+        tabs.setForeground(TEXT);
+        tabs.setBorder(BorderFactory.createEmptyBorder(6, 0, 0, 0));
+        tabs.addTab("Dashboard", buildDashboard());
+        tabs.addTab("WAV Testing", buildWavTesting());
+        tabs.addTab("Alert History", buildAlertHistory());
+        root.add(tabs, BorderLayout.CENTER);
+
         root.add(buildStatusBar(), BorderLayout.SOUTH);
         setContentPane(root);
         setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
@@ -162,8 +207,8 @@ public final class OmniEarFrame extends JFrame {
                 shutdown();
             }
         });
-        setSize(720, 720);
-        setMinimumSize(new Dimension(560, 560));
+        setSize(820, 780);
+        setMinimumSize(new Dimension(640, 620));
         setLocationRelativeTo(null);
         showIdleBanner();
     }
@@ -177,13 +222,13 @@ public final class OmniEarFrame extends JFrame {
         deviceLabel.setForeground(MUTED);
         deviceLabel.setFont(deviceLabel.getFont().deriveFont(Font.PLAIN, 12f));
 
-        DefaultComboBoxModel<String> model = new DefaultComboBoxModel<>();
-        model.addElement("<System default>");
+        DefaultComboBoxModel<String> deviceModel = new DefaultComboBoxModel<>();
+        deviceModel.addElement("<System default>");
         for (String name : MicrophoneSource.captureDeviceNames()) {
-            model.addElement(name);
+            deviceModel.addElement(name);
         }
-        deviceCombo.setModel(model);
-        deviceCombo.setPreferredSize(new Dimension(320, 30));
+        deviceCombo.setModel(deviceModel);
+        deviceCombo.setPreferredSize(new Dimension(340, 30));
         deviceCombo.setBackground(PANEL_2);
         deviceCombo.setForeground(TEXT);
 
@@ -191,7 +236,7 @@ public final class OmniEarFrame extends JFrame {
         left.setOpaque(false);
         left.setLayout(new BoxLayout(left, BoxLayout.X_AXIS));
         left.add(deviceLabel);
-        left.add(javax.swing.Box.createHorizontalStrut(8));
+        left.add(Box.createHorizontalStrut(8));
         left.add(deviceCombo);
 
         startStop.setFocusPainted(false);
@@ -205,18 +250,11 @@ public final class OmniEarFrame extends JFrame {
         return bar;
     }
 
-    private JComponent buildCenter() {
-        JPanel center = new JPanel(new BorderLayout(12, 12));
-        center.setOpaque(false);
-        center.add(buildMeters(), BorderLayout.NORTH);
-        center.add(buildAlerts(), BorderLayout.CENTER);
-        return center;
-    }
-
-    private JComponent buildMeters() {
+    private JComponent buildDashboard() {
         JPanel wrap = new JPanel();
-        wrap.setOpaque(false);
+        wrap.setBackground(BG);
         wrap.setLayout(new BoxLayout(wrap, BoxLayout.Y_AXIS));
+        wrap.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
 
         banner.setOpaque(true);
         banner.setFont(banner.getFont().deriveFont(Font.BOLD, 22f));
@@ -224,19 +262,37 @@ public final class OmniEarFrame extends JFrame {
         banner.setAlignmentX(Component.LEFT_ALIGNMENT);
         banner.setMaximumSize(new Dimension(Integer.MAX_VALUE, 64));
 
-        JLabel levelLabel = sectionLabel("INPUT LEVEL");
+        modeWarning.setForeground(WARN);
+        modeWarning.setFont(modeWarning.getFont().deriveFont(Font.PLAIN, 12f));
+        modeWarning.setAlignmentX(Component.LEFT_ALIGNMENT);
+
         levelMeter.setAlignmentX(Component.LEFT_ALIGNMENT);
         levelMeter.setMaximumSize(new Dimension(Integer.MAX_VALUE, 26));
 
-        wrap.add(banner);
-        wrap.add(javax.swing.Box.createVerticalStrut(12));
-        wrap.add(levelLabel);
-        wrap.add(javax.swing.Box.createVerticalStrut(6));
-        wrap.add(levelMeter);
-        wrap.add(javax.swing.Box.createVerticalStrut(14));
-        wrap.add(sectionLabel("CATEGORY SCORES"));
-        wrap.add(javax.swing.Box.createVerticalStrut(6));
+        diagResult.setForeground(MUTED);
+        diagResult.setFont(diagResult.getFont().deriveFont(Font.PLAIN, 12f));
+        diagResult.setAlignmentX(Component.LEFT_ALIGNMENT);
 
+        diagButton.setFocusPainted(false);
+        diagButton.setAlignmentX(Component.LEFT_ALIGNMENT);
+        diagButton.addActionListener(e -> runMicDiagnostic());
+
+        wrap.add(banner);
+        wrap.add(Box.createVerticalStrut(6));
+        wrap.add(modeWarning);
+        wrap.add(Box.createVerticalStrut(12));
+
+        wrap.add(sectionTitle("INPUT LEVEL"));
+        wrap.add(Box.createVerticalStrut(6));
+        wrap.add(levelMeter);
+        wrap.add(Box.createVerticalStrut(8));
+        wrap.add(diagButton);
+        wrap.add(Box.createVerticalStrut(4));
+        wrap.add(diagResult);
+        wrap.add(Box.createVerticalStrut(16));
+
+        wrap.add(sectionTitle("CATEGORY SCORES"));
+        wrap.add(Box.createVerticalStrut(6));
         for (CategoryRule rule : detectionConfig.categories) {
             ThreatCategory cat = rule.category();
             ScoreBar bar = new ScoreBar(CATEGORY_NAMES.get(cat), CATEGORY_COLORS.get(cat));
@@ -245,16 +301,75 @@ public final class OmniEarFrame extends JFrame {
             bar.setThreshold(rule.threshold());
             bars.put(cat, bar);
             wrap.add(bar);
-            wrap.add(javax.swing.Box.createVerticalStrut(6));
+            wrap.add(Box.createVerticalStrut(6));
         }
-        return wrap;
+        wrap.add(Box.createVerticalGlue());
+
+        JScrollPane scroll = new JScrollPane(wrap);
+        scroll.setBorder(null);
+        scroll.getViewport().setBackground(BG);
+        scroll.getVerticalScrollBar().setUnitIncrement(16);
+        return scroll;
     }
 
-    private JComponent buildAlerts() {
-        JPanel panel = new JPanel(new BorderLayout(0, 6));
-        panel.setOpaque(false);
-        panel.setBorder(BorderFactory.createEmptyBorder(6, 0, 0, 0));
-        panel.add(sectionLabel("ALERT LOG"), BorderLayout.NORTH);
+    private JComponent buildWavTesting() {
+        JPanel panel = new JPanel(new BorderLayout(0, 10));
+        panel.setBackground(BG);
+        panel.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
+
+        wavPath.setBackground(PANEL_2);
+        wavPath.setForeground(TEXT);
+        wavPath.setCaretColor(TEXT);
+
+        wavBrowse.setFocusPainted(false);
+        wavBrowse.addActionListener(e -> chooseWav());
+        wavClassify.setFocusPainted(false);
+        wavClassify.setFont(wavClassify.getFont().deriveFont(Font.BOLD, 13f));
+        wavClassify.setBackground(OK);
+        wavClassify.setForeground(Color.WHITE);
+        wavClassify.addActionListener(e -> runWav(false));
+        wavAnalyze.setFocusPainted(false);
+        wavAnalyze.addActionListener(e -> runWav(true));
+
+        JPanel picker = new JPanel(new BorderLayout(8, 0));
+        picker.setBackground(BG);
+        picker.add(wavPath, BorderLayout.CENTER);
+        JPanel buttons = new JPanel();
+        buttons.setBackground(BG);
+        buttons.setLayout(new BoxLayout(buttons, BoxLayout.X_AXIS));
+        buttons.add(wavBrowse);
+        buttons.add(Box.createHorizontalStrut(6));
+        buttons.add(wavClassify);
+        buttons.add(Box.createHorizontalStrut(6));
+        buttons.add(wavAnalyze);
+        picker.add(buttons, BorderLayout.EAST);
+
+        wavResult.setEditable(false);
+        wavResult.setBackground(PANEL);
+        wavResult.setForeground(TEXT);
+        wavResult.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
+        wavResult.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        wavResult.setText("Pick a WAV and choose Classify (loudest 2 s window) or Analyze (whole file).\n"
+                + "Classification and analysis run on a background thread.");
+        JScrollPane scroll = new JScrollPane(wavResult);
+        scroll.getViewport().setBackground(PANEL);
+        scroll.setBorder(BorderFactory.createLineBorder(PANEL_2));
+
+        JLabel hint = new JLabel("<html><span style='color:#9a9aad'>Classify = one loudest window through the model. "
+                + "Analyze = every window through the full decision pipeline (with confirmation windows) "
+                + "and lists emitted events.</span></html>");
+        hint.setBorder(BorderFactory.createEmptyBorder(4, 0, 0, 0));
+
+        panel.add(picker, BorderLayout.NORTH);
+        panel.add(scroll, BorderLayout.CENTER);
+        panel.add(hint, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JComponent buildAlertHistory() {
+        JPanel panel = new JPanel(new BorderLayout(0, 8));
+        panel.setBackground(BG);
+        panel.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
 
         alertTable.setBackground(PANEL);
         alertTable.setForeground(TEXT);
@@ -263,12 +378,37 @@ public final class OmniEarFrame extends JFrame {
         alertTable.setFont(alertTable.getFont().deriveFont(Font.PLAIN, 13f));
         alertTable.getTableHeader().setReorderingAllowed(false);
         alertTable.setFillsViewportHeight(true);
-        alertTable.getColumnModel().getColumn(1).setCellRenderer(new CategoryCellRenderer());
+        alertTable.getColumnModel().getColumn(1).setCellRenderer(new PriorityCellRenderer());
+        alertTable.getColumnModel().getColumn(2).setCellRenderer(new CategoryCellRenderer());
+        alertTable.getColumnModel().getColumn(1).setMaxWidth(40);
 
         JScrollPane scroll = new JScrollPane(alertTable);
         scroll.getViewport().setBackground(PANEL);
         scroll.setBorder(BorderFactory.createLineBorder(PANEL_2));
+
+        JButton export = new JButton("Export CSV...");
+        export.setFocusPainted(false);
+        export.addActionListener(e -> exportAlerts());
+        JButton clear = new JButton("Clear");
+        clear.setFocusPainted(false);
+        clear.addActionListener(e -> clearAlerts());
+
+        alertCount.setForeground(MUTED);
+        alertCount.setFont(alertCount.getFont().deriveFont(Font.PLAIN, 12f));
+
+        JPanel south = new JPanel(new BorderLayout(8, 0));
+        south.setBackground(BG);
+        JPanel actions = new JPanel();
+        actions.setBackground(BG);
+        actions.setLayout(new BoxLayout(actions, BoxLayout.X_AXIS));
+        actions.add(export);
+        actions.add(Box.createHorizontalStrut(6));
+        actions.add(clear);
+        south.add(alertCount, BorderLayout.WEST);
+        south.add(actions, BorderLayout.EAST);
+
         panel.add(scroll, BorderLayout.CENTER);
+        panel.add(south, BorderLayout.SOUTH);
         return panel;
     }
 
@@ -283,12 +423,33 @@ public final class OmniEarFrame extends JFrame {
         return bar;
     }
 
-    private static JLabel sectionLabel(String text) {
+    private static JLabel sectionTitle(String text) {
         JLabel label = new JLabel(text);
         label.setForeground(MUTED);
         label.setFont(label.getFont().deriveFont(Font.BOLD, 11f));
         label.setAlignmentX(Component.LEFT_ALIGNMENT);
         return label;
+    }
+
+    // ---- journal / priorities ----------------------------------------------
+
+    /** Local alert priority: P0 critical, P1 high, P4 informational. */
+    private static String priority(ThreatCategory category) {
+        return switch (category) {
+            case GUNSHOT, EXPLOSION -> "P0";
+            case SCREAM_DISTRESS, IMPACT_CRASH, GLASS_BREAK -> "P1";
+            case SIREN -> "P4";
+            default -> "--";
+        };
+    }
+
+    private static Color priorityColor(String p) {
+        return switch (p) {
+            case "P0" -> ALERT;
+            case "P1" -> WARN;
+            case "P4" -> new Color(0x42a5f5);
+            default -> MUTED;
+        };
     }
 
     // ---- pipeline -----------------------------------------------------------
@@ -327,6 +488,7 @@ public final class OmniEarFrame extends JFrame {
         String deviceName = selectedDevice();
         startStop.setEnabled(false);
         status.setText("Loading model...");
+        modeWarning.setText("Loading model...");
         Thread starter = new Thread(() -> {
             try {
                 CedMiniThreatModel loaded = CedMiniThreatModel.fromModelsDir(modelsDir, modelConfig);
@@ -363,7 +525,7 @@ public final class OmniEarFrame extends JFrame {
                         dropped.incrementAndGet();
                     }
                 },
-                () -> SwingUtilities.invokeLater(() -> onCaptureEnded()));
+                () -> SwingUtilities.invokeLater(this::onCaptureEnded));
 
         worker = new Thread(() -> consume(mapper, engine), "gui-inference");
         worker.setDaemon(true);
@@ -410,9 +572,7 @@ public final class OmniEarFrame extends JFrame {
     private void updateLive(float level, float peakLevel, MappedScores mapped, List<ThreatEvent> events) {
         levelMeter.setLevels(level, peakLevel);
         for (Map.Entry<ThreatCategory, ScoreBar> e : bars.entrySet()) {
-            ThreatCategory cat = e.getKey();
-            float score = mapped.score(cat);
-            e.getValue().setScore(score);
+            e.getValue().setScore(mapped.score(e.getKey()));
         }
         for (ThreatEvent event : events) {
             alerts.incrementAndGet();
@@ -426,9 +586,8 @@ public final class OmniEarFrame extends JFrame {
     private void logDiagnostics(ModelPrediction prediction, MappedScores mapped, float rmsDb, float peakDb) {
         StringBuilder cats = new StringBuilder();
         for (CategoryRule rule : detectionConfig.categories) {
-            ThreatCategory cat = rule.category();
-            cats.append(cat.name()).append('=')
-                    .append(String.format("%.2f", mapped.score(cat))).append(' ');
+            cats.append(rule.category().name()).append('=')
+                    .append(String.format("%.2f", mapped.score(rule.category()))).append(' ');
         }
         StringBuilder top = new StringBuilder();
         for (Map.Entry<String, Float> e : prediction.topK(3)) {
@@ -447,18 +606,21 @@ public final class OmniEarFrame extends JFrame {
                 .atZone(ZoneId.systemDefault()).toLocalTime().format(TIME);
         alertModel.insertRow(0, new Object[] {
                 time,
+                priority(event.category()),
                 CATEGORY_NAMES.getOrDefault(event.category(), event.category().name()),
                 String.format("%.2f", event.score()),
                 event.durationMs() + " ms",
                 event.drivingLabel()});
-        while (alertModel.getRowCount() > 300) {
+        while (alertModel.getRowCount() > 1000) {
             alertModel.removeRow(alertModel.getRowCount() - 1);
         }
+        alertCount.setText(alertModel.getRowCount() + " alerts");
     }
 
     private void flashAlert(ThreatEvent event) {
         String name = CATEGORY_NAMES.getOrDefault(event.category(), event.category().name());
-        banner.setText(String.format("\u26a0  %s   %.2f", name, event.score()));
+        banner.setText(String.format("%s  \u26a0  %s   %.2f",
+                priority(event.category()), name, event.score()));
         banner.setBackground(ALERT);
         banner.setForeground(Color.WHITE);
         bannerReset.restart();
@@ -466,12 +628,16 @@ public final class OmniEarFrame extends JFrame {
 
     private void showMonitoringBanner() {
         if (running) {
-            banner.setText("\u25cf  MONITORING");
+            banner.setText("\u25cf  MONITORING  " + prioritySummary());
             banner.setBackground(new Color(0x15351f));
             banner.setForeground(new Color(0x7ee2a8));
         } else {
             showIdleBanner();
         }
+    }
+
+    private static String prioritySummary() {
+        return "P0 gunshot/explosion \u00b7 P1 scream/impact/glass \u00b7 P4 siren";
     }
 
     private void showIdleBanner() {
@@ -516,6 +682,18 @@ public final class OmniEarFrame extends JFrame {
         model = null;
     }
 
+    private void closeTestModel() {
+        CedMiniThreatModel m = testModel;
+        if (m != null) {
+            try {
+                m.close();
+            } catch (RuntimeException ignored) {
+                // best effort on shutdown
+            }
+        }
+        testModel = null;
+    }
+
     private void onCaptureEnded() {
         if (running) {
             stopPipeline("Capture ended");
@@ -525,8 +703,9 @@ public final class OmniEarFrame extends JFrame {
     private void fail(String message) {
         startStop.setEnabled(true);
         status.setText(message);
+        modeWarning.setText("Not monitoring");
         showIdleBanner();
-        javax.swing.JOptionPane.showMessageDialog(this, message, "OmniEar", javax.swing.JOptionPane.ERROR_MESSAGE);
+        JOptionPane.showMessageDialog(this, message, "OmniEar", JOptionPane.ERROR_MESSAGE);
     }
 
     private void setRunningUi(boolean isRunning) {
@@ -534,9 +713,21 @@ public final class OmniEarFrame extends JFrame {
         startStop.setText(isRunning ? "Stop" : "Start listening");
         startStop.setBackground(isRunning ? ALERT : OK);
         deviceCombo.setEnabled(!isRunning);
+        diagButton.setEnabled(!isRunning);
+        modeWarning.setText(isRunning
+                ? "Live monitoring from " + deviceNameForWarning() + ". Audio is processed in memory and never saved."
+                : "Idle - press Start listening to monitor. The model is not loaded until you start.");
         if (isRunning) {
             showMonitoringBanner();
         }
+    }
+
+    private String deviceNameForWarning() {
+        Object item = deviceCombo.getSelectedItem();
+        if (item == null || "<System default>".equals(item)) {
+            return "the system default input";
+        }
+        return item.toString();
     }
 
     private void shutdown() {
@@ -546,6 +737,7 @@ public final class OmniEarFrame extends JFrame {
             cap.close();
         }
         closeModel();
+        closeTestModel();
         dispose();
         System.exit(0);
     }
@@ -576,6 +768,317 @@ public final class OmniEarFrame extends JFrame {
             max = Math.max(max, Math.abs(v));
         }
         return max;
+    }
+
+    // ---- microphone diagnostic ---------------------------------------------
+
+    private void runMicDiagnostic() {
+        if (running) {
+            JOptionPane.showMessageDialog(this, "Stop listening before running the input diagnostic.",
+                    "OmniEar", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        String device = selectedDevice();
+        diagButton.setEnabled(false);
+        diagResult.setText("Recording 5 s...");
+        Thread t = new Thread(() -> {
+            String result;
+            try {
+                result = measureInput(device, 5.0);
+            } catch (LineUnavailableException e) {
+                result = "Could not open microphone: " + e.getMessage()
+                        + " (try another device or check OS permission)";
+            } catch (Exception e) {
+                result = "Diagnostic failed: " + e.getMessage();
+            }
+            String r = result;
+            SwingUtilities.invokeLater(() -> {
+                diagResult.setText(r);
+                diagButton.setEnabled(!running);
+            });
+        }, "mic-diag");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** Reads {@code seconds} of mono input and reports level/clipping statistics. */
+    private String measureInput(String device, double seconds) throws Exception {
+        AudioFormat desired = new AudioFormat(
+                AudioFormat.Encoding.PCM_SIGNED, modelConfig.sr, 16, 1, 2, modelConfig.sr, false);
+        try (MicrophoneSource mic = new MicrophoneSource(desired, device)) {
+            AudioFormat fmt = mic.format();
+            int channels = Math.max(1, fmt.getChannels());
+            int frameSize = 2 * channels;
+            byte[] buf = new byte[4096];
+            double sumSq = 0;
+            double peak = 0;
+            long count = 0;
+            long nearFull = 0;
+            long deadline = System.nanoTime() + (long) (seconds * 1_000_000_000L);
+            while (System.nanoTime() < deadline) {
+                int n = mic.read(buf, 0, buf.length);
+                if (n <= 0) {
+                    continue;
+                }
+                for (int f = 0; f + frameSize <= n; f += frameSize) {
+                    float sum = 0f;
+                    for (int c = 0; c < channels; c++) {
+                        int lo = buf[f + c * 2] & 0xFF;
+                        int hi = buf[f + c * 2 + 1]; // signed high byte
+                        sum += ((hi << 8) | lo) / 32768f;
+                    }
+                    float v = sum / channels;
+                    sumSq += (double) v * v;
+                    float a = Math.abs(v);
+                    if (a > peak) {
+                        peak = a;
+                    }
+                    if (a >= 0.98f) {
+                        nearFull++;
+                    }
+                    count++;
+                }
+            }
+            if (count == 0) {
+                return "No audio captured.";
+            }
+            double rms = Math.sqrt(sumSq / count);
+            double rmsDb = 20 * Math.log10(Math.max(rms, 1e-9));
+            double peakDb = 20 * Math.log10(Math.max(peak, 1e-9));
+            double nearPct = 100.0 * nearFull / count;
+            String guidance;
+            if (peakDb > -1.0 || nearPct > 1.0) {
+                guidance = "too hot - lower the OS microphone gain";
+            } else if (peakDb < -30.0) {
+                guidance = "very quiet - raise the OS gain or move closer";
+            } else if (peakDb < -20.0) {
+                guidance = "a little low - consider raising the OS gain";
+            } else {
+                guidance = "level looks good";
+            }
+            return String.format(
+                    "RMS %.1f dBFS   peak %.1f dBFS   near-full-scale %.2f%%   -> %s",
+                    rmsDb, peakDb, nearPct, guidance);
+        }
+    }
+
+    // ---- WAV testing --------------------------------------------------------
+
+    private void chooseWav() {
+        JFileChooser chooser = new JFileChooser(wavPath.getText().isBlank()
+                ? new java.io.File(".")
+                : new java.io.File(wavPath.getText()).getParentFile());
+        chooser.setFileFilter(new FileNameExtensionFilter("WAV audio (*.wav)", "wav"));
+        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            wavPath.setText(chooser.getSelectedFile().getAbsolutePath());
+        }
+    }
+
+    private void runWav(boolean analyzeAll) {
+        String path = wavPath.getText().trim();
+        if (path.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Choose a WAV file first.",
+                    "OmniEar", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        wavClassify.setEnabled(false);
+        wavAnalyze.setEnabled(false);
+        wavResult.setText((analyzeAll ? "Analyzing " : "Classifying ") + path + " ...");
+        Thread t = new Thread(() -> {
+            String out;
+            try {
+                out = analyzeAll ? analyzeWavFile(Path.of(path)) : classifyWavFile(Path.of(path));
+            } catch (Exception e) {
+                LOG.warn("WAV test failed for {}", path, e);
+                out = "Failed: " + e.getMessage();
+            }
+            String text = out;
+            SwingUtilities.invokeLater(() -> {
+                wavResult.setText(text);
+                wavResult.setCaretPosition(0);
+                wavClassify.setEnabled(true);
+                wavAnalyze.setEnabled(true);
+            });
+        }, "wav-test");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** Lazily loads a dedicated model for offline WAV testing (kept out of the live worker). */
+    private CedMiniThreatModel testModel() throws Exception {
+        CedMiniThreatModel m = testModel;
+        if (m == null) {
+            synchronized (this) {
+                if (testModel == null) {
+                    testModel = CedMiniThreatModel.fromModelsDir(modelsDir, modelConfig);
+                }
+                m = testModel;
+            }
+        }
+        return m;
+    }
+
+    private String classifyWavFile(Path file) throws Exception {
+        int sr = modelConfig.sr;
+        float[] samples = AudioPreprocessor.readMono(file, sr);
+        StringBuilder sb = new StringBuilder();
+        sb.append("FILE     ").append(file.getFileName()).append('\n');
+        sb.append(String.format("LENGTH   %.2f s @ %d Hz (%d samples)%n",
+                samples.length / (double) sr, sr, samples.length));
+        if (samples.length == 0) {
+            sb.append("\nNo audio samples in file.");
+            return sb.toString();
+        }
+        int win = modelConfig.windowSamples();
+        int off = loudestOffset(samples, win, modelConfig.hopSamples());
+        float[] window = AudioPreprocessor.window(samples, off, win);
+        sb.append(String.format("WINDOW   loudest %.1f s at t=%.2f s%n",
+                win / (double) sr, off / (double) sr));
+
+        ModelPrediction prediction = testModel().predict(AudioPreprocessor.normalizePeak(window));
+        MappedScores mapped = mapWithGlass(prediction, window);
+
+        sb.append("\nMODEL TOP-5\n");
+        int rank = 0;
+        for (Map.Entry<String, Float> e : prediction.topK(5)) {
+            sb.append(String.format("  %d. %-14s %.3f%n", ++rank, e.getKey(), e.getValue()));
+        }
+        sb.append("\nCATEGORY SCORES\n");
+        for (CategoryRule rule : detectionConfig.categories) {
+            ThreatCategory cat = rule.category();
+            float score = mapped.score(cat);
+            boolean hot = score >= rule.threshold();
+            sb.append(String.format("  %-16s %.3f  (thr %.3f)%s%n",
+                    CATEGORY_NAMES.get(cat), score, rule.threshold(), hot ? "  <-- ALERT" : ""));
+        }
+        ThreatCategory best = mapped.strongest();
+        float bestScore = mapped.strongestScore();
+        boolean alert = bestScore >= thresholds.getOrDefault(best, 1f) && best != ThreatCategory.NORMAL;
+        sb.append("\nVERDICT  ").append(CATEGORY_NAMES.getOrDefault(best, best.name()))
+                .append("   priority ").append(priority(best))
+                .append(String.format("   score %.3f", bestScore))
+                .append(alert ? "   -> ALERT" : "   -> below threshold");
+        return sb.toString();
+    }
+
+    private String analyzeWavFile(Path file) throws Exception {
+        int sr = modelConfig.sr;
+        int win = modelConfig.windowSamples();
+        int hop = modelConfig.hopSamples();
+        float[] samples = AudioPreprocessor.readMono(file, sr);
+        StringBuilder sb = new StringBuilder();
+        sb.append("FILE     ").append(file.getFileName()).append('\n');
+        sb.append(String.format("LENGTH   %.2f s @ %d Hz%n", samples.length / (double) sr, sr));
+        if (samples.length == 0) {
+            sb.append("\nNo audio samples in file.");
+            return sb.toString();
+        }
+        float[][] wins = AudioPreprocessor.windows(samples, modelConfig);
+        sb.append("WINDOWS  ").append(wins.length).append(String.format("  (%.1f s / %.1f s hop)%n",
+                win / (double) sr, hop / (double) sr));
+
+        CedMiniThreatModel m = testModel();
+        ScoreMapper mapper = new ScoreMapper(detectionConfig);
+        TemporalDecisionEngine engine = new TemporalDecisionEngine(detectionConfig);
+        List<ThreatEvent> events = new ArrayList<>();
+        for (int i = 0; i < wins.length; i++) {
+            ModelPrediction prediction = m.predict(AudioPreprocessor.normalizePeak(wins[i]));
+            MappedScores mapped = mapWithGlass(prediction, wins[i]);
+            long endMs = (long) ((i * hop + win) * 1000L / sr);
+            events.addAll(engine.update(endMs, mapped));
+        }
+        sb.append("\nEVENTS   ").append(events.size()).append('\n');
+        for (ThreatEvent event : events) {
+            sb.append(String.format("  %6.2f s  %-16s %s  score %.3f  via %s%n",
+                    event.endMs() / 1000.0,
+                    CATEGORY_NAMES.getOrDefault(event.category(), event.category().name()),
+                    priority(event.category()),
+                    event.score(),
+                    event.drivingLabel()));
+        }
+        if (events.isEmpty()) {
+            sb.append("  (no category crossed its confirmation threshold)");
+        }
+        return sb.toString();
+    }
+
+    private MappedScores mapWithGlass(ModelPrediction prediction, float[] window) {
+        MappedScores mapped = new ScoreMapper(detectionConfig).map(prediction);
+        if (GLASS_DETECTOR.detects(window)) {
+            mapped = mapped.withScore(ThreatCategory.GLASS_BREAK, 1f, "glass(hf)");
+        }
+        return mapped;
+    }
+
+    /** Offset of the highest-energy window of length {@code win}, stepping by {@code hop}. */
+    private static int loudestOffset(float[] samples, int win, int hop) {
+        if (samples.length <= win) {
+            return 0;
+        }
+        int best = 0;
+        double bestEnergy = -1;
+        for (int o = 0; o + win <= samples.length; o += Math.max(1, hop)) {
+            double sum = 0;
+            for (int i = 0; i < win; i++) {
+                float v = samples[o + i];
+                sum += (double) v * v;
+            }
+            if (sum > bestEnergy) {
+                bestEnergy = sum;
+                best = o;
+            }
+        }
+        return best;
+    }
+
+    // ---- alert history ------------------------------------------------------
+
+    private void clearAlerts() {
+        alertModel.setRowCount(0);
+        alertCount.setText("0 alerts");
+    }
+
+    private void exportAlerts() {
+        if (alertModel.getRowCount() == 0) {
+            JOptionPane.showMessageDialog(this, "There are no alerts to export.",
+                    "OmniEar", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        JFileChooser chooser = new JFileChooser(".");
+        chooser.setSelectedFile(new java.io.File("omniear-alerts.csv"));
+        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        Path out = chooser.getSelectedFile().toPath();
+        StringBuilder sb = new StringBuilder();
+        for (int c = 0; c < alertModel.getColumnCount(); c++) {
+            if (c > 0) {
+                sb.append(',');
+            }
+            sb.append(csv(alertModel.getColumnName(c)));
+        }
+        sb.append('\n');
+        for (int r = 0; r < alertModel.getRowCount(); r++) {
+            for (int c = 0; c < alertModel.getColumnCount(); c++) {
+                if (c > 0) {
+                    sb.append(',');
+                }
+                Object v = alertModel.getValueAt(r, c);
+                sb.append(csv(v == null ? "" : v.toString()));
+            }
+            sb.append('\n');
+        }
+        try {
+            Files.writeString(out, sb.toString(), StandardCharsets.UTF_8);
+            status.setText("Exported " + alertModel.getRowCount() + " alerts to " + out);
+        } catch (IOException e) {
+            JOptionPane.showMessageDialog(this, "Could not write " + out + ": " + e.getMessage(),
+                    "OmniEar", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private static String csv(String value) {
+        return '"' + value.replace("\"", "\"\"") + '"';
     }
 
     // ---- components ---------------------------------------------------------
@@ -694,6 +1197,19 @@ public final class OmniEarFrame extends JFrame {
                     }
                 }
             }
+            return c;
+        }
+    }
+
+    private static final class PriorityCellRenderer extends DefaultTableCellRenderer {
+        @Override
+        public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected,
+                                                       boolean hasFocus, int row, int column) {
+            Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+            c.setBackground(isSelected ? table.getSelectionBackground() : PANEL);
+            setHorizontalAlignment(SwingConstants.CENTER);
+            setFont(getFont().deriveFont(Font.BOLD, 12f));
+            c.setForeground(value == null ? MUTED : priorityColor(value.toString()));
             return c;
         }
     }

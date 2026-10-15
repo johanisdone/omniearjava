@@ -16,13 +16,20 @@ import com.example.omniear.model.CedMiniThreatModel;
 import com.example.omniear.model.ModelConfig;
 import com.example.omniear.model.ModelPrediction;
 import java.awt.BorderLayout;
+import java.awt.CardLayout;
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.Font;
+import java.awt.FontMetrics;
+import java.awt.GradientPaint;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
+import java.awt.LayoutManager;
 import java.awt.RenderingHints;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.IOException;
@@ -32,7 +39,6 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -49,36 +55,30 @@ import javax.swing.DefaultComboBoxModel;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
-import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
-import javax.swing.JTabbedPane;
 import javax.swing.JTable;
-import javax.swing.JTextArea;
-import javax.swing.JTextField;
+import javax.swing.Scrollable;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 import javax.swing.WindowConstants;
-import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * OmniEar dashboard: a tabbed window with live monitoring, offline WAV testing
- * and a session alert history.
+ * OmniEar dashboard: a dark, card-based window with live monitoring and a
+ * session alert history.
  *
  * <ul>
  *   <li><b>Dashboard</b> - device picker, mode/readiness banner, input level
  *       meter, a five-second microphone input diagnostic and per-category score
  *       bars with threshold markers.</li>
- *   <li><b>WAV Testing</b> - classify the loudest window of any WAV, or replay
- *       the whole file through the live decision pipeline.</li>
  *   <li><b>Alert History</b> - rolling alert log (P0/P1/P4 priorities) with a
  *       UTF-8 CSV export.</li>
  * </ul>
@@ -93,15 +93,20 @@ public final class OmniEarFrame extends JFrame {
     /** Windows whose strongest category score reaches this are logged for diagnosis. */
     private static final float DIAG_FLOOR = 0.2f;
 
-    private static final Color BG = new Color(0x16161c);
-    private static final Color PANEL = new Color(0x1f1f28);
-    private static final Color PANEL_2 = new Color(0x272733);
-    private static final Color TEXT = new Color(0xe6e6ee);
-    private static final Color MUTED = new Color(0x9a9aad);
-    private static final Color OK = new Color(0x2fbf71);
-    private static final Color ALERT = new Color(0xe5484d);
-    private static final Color WARN = new Color(0xffb74d);
+    // ---- palette ------------------------------------------------------------
+    private static final Color BG = new Color(0x0e1015);
+    private static final Color CARD = new Color(0x171a22);
+    private static final Color CARD_2 = new Color(0x1f2430);
+    private static final Color BORDER = new Color(0x2a3040);
+    private static final Color TEXT = new Color(0xe8eaf0);
+    private static final Color MUTED = new Color(0x8b90a3);
+    private static final Color ACCENT = new Color(0x5b8cff);
+    private static final Color OK = new Color(0x35d07f);
+    private static final Color ALERT = new Color(0xff5c5c);
+    private static final Color WARN = new Color(0xffb020);
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
+
+    private static final String FONT_FAMILY = pickFontFamily();
 
     private static final Map<ThreatCategory, Color> CATEGORY_COLORS = new EnumMap<>(ThreatCategory.class);
     private static final Map<ThreatCategory, String> CATEGORY_NAMES = new EnumMap<>(ThreatCategory.class);
@@ -111,7 +116,7 @@ public final class OmniEarFrame extends JFrame {
         CATEGORY_COLORS.put(ThreatCategory.GUNSHOT, new Color(0xef5350));
         CATEGORY_COLORS.put(ThreatCategory.EXPLOSION, new Color(0xff7043));
         CATEGORY_COLORS.put(ThreatCategory.IMPACT_CRASH, new Color(0xffd54f));
-        CATEGORY_COLORS.put(ThreatCategory.SIREN, new Color(0x42a5f5));
+        CATEGORY_COLORS.put(ThreatCategory.SIREN, new Color(0x5b8cff));
         CATEGORY_COLORS.put(ThreatCategory.GLASS_BREAK, new Color(0x26c6da));
         CATEGORY_NAMES.put(ThreatCategory.SCREAM_DISTRESS, "SCREAM / DISTRESS");
         CATEGORY_NAMES.put(ThreatCategory.GUNSHOT, "GUNSHOT");
@@ -129,22 +134,21 @@ public final class OmniEarFrame extends JFrame {
     private final Map<ThreatCategory, Float> thresholds = new EnumMap<>(ThreatCategory.class);
 
     private final JComboBox<String> deviceCombo = new JComboBox<>();
-    private final JButton startStop = new JButton("Start listening");
-    private final JLabel banner = new JLabel("IDLE", SwingConstants.CENTER);
+    private final RoundedButton startStop = new RoundedButton("Start listening", OK, 12);
+    private final StatusBanner banner = new StatusBanner();
     private final JLabel modeWarning = new JLabel(" ");
     private final JLabel status = new JLabel("Ready");
     private final JLabel stats = new JLabel(" ");
     private final LevelMeter levelMeter = new LevelMeter();
     private final Map<ThreatCategory, ScoreBar> bars = new EnumMap<>(ThreatCategory.class);
 
-    private final JButton diagButton = new JButton("Run 5 s input diagnostic");
+    private final RoundedButton diagButton = new RoundedButton("Run 5 s input diagnostic", CARD_2, 10);
     private final JLabel diagResult = new JLabel(" ");
 
-    private final JTextField wavPath = new JTextField();
-    private final JButton wavBrowse = new JButton("Browse...");
-    private final JButton wavClassify = new JButton("Classify WAV");
-    private final JButton wavAnalyze = new JButton("Analyze WAV");
-    private final JTextArea wavResult = new JTextArea();
+    private final CardLayout cards = new CardLayout();
+    private final JPanel cardHost = new JPanel(cards);
+    private final RoundedButton navDashboard = new RoundedButton("Dashboard", ACCENT, 12);
+    private final RoundedButton navAlerts = new RoundedButton("Alerts", CARD_2, 12);
 
     private final DefaultTableModel alertModel = new DefaultTableModel(
             new Object[] {"Time", "P", "Category", "Score", "Dur", "Label"}, 0) {
@@ -157,7 +161,6 @@ public final class OmniEarFrame extends JFrame {
     private final JLabel alertCount = new JLabel("0 alerts");
 
     private volatile CedMiniThreatModel model;
-    private volatile CedMiniThreatModel testModel;
     private volatile MicrophoneSource source;
     private volatile AudioCaptureService capture;
     private volatile Thread worker;
@@ -181,22 +184,35 @@ public final class OmniEarFrame extends JFrame {
         buildUi();
     }
 
+    // ---- fonts --------------------------------------------------------------
+
+    private static String pickFontFamily() {
+        java.util.Set<String> available = new java.util.HashSet<>(List.of(
+                java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().getAvailableFontFamilyNames()));
+        for (String candidate : new String[] {"Segoe UI", "Inter", "Roboto", "Helvetica Neue", "SansSerif"}) {
+            if (available.contains(candidate)) {
+                return candidate;
+            }
+        }
+        return "SansSerif";
+    }
+
+    private static Font font(int style, float size) {
+        return new Font(FONT_FAMILY, style, 12).deriveFont(size);
+    }
+
     // ---- layout -------------------------------------------------------------
 
     private void buildUi() {
-        JPanel root = new JPanel(new BorderLayout(12, 12));
+        JPanel root = new JPanel(new BorderLayout(0, 14));
         root.setBackground(BG);
-        root.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
-        root.add(buildToolbar(), BorderLayout.NORTH);
+        root.setBorder(BorderFactory.createEmptyBorder(16, 16, 14, 16));
+        root.add(buildHeader(), BorderLayout.NORTH);
 
-        JTabbedPane tabs = new JTabbedPane();
-        tabs.setBackground(PANEL);
-        tabs.setForeground(TEXT);
-        tabs.setBorder(BorderFactory.createEmptyBorder(6, 0, 0, 0));
-        tabs.addTab("Dashboard", buildDashboard());
-        tabs.addTab("WAV Testing", buildWavTesting());
-        tabs.addTab("Alert History", buildAlertHistory());
-        root.add(tabs, BorderLayout.CENTER);
+        cardHost.setOpaque(false);
+        cardHost.add(buildDashboard(), "dashboard");
+        cardHost.add(buildAlertHistory(), "alerts");
+        root.add(cardHost, BorderLayout.CENTER);
 
         root.add(buildStatusBar(), BorderLayout.SOUTH);
         setContentPane(root);
@@ -207,20 +223,49 @@ public final class OmniEarFrame extends JFrame {
                 shutdown();
             }
         });
-        setSize(820, 780);
-        setMinimumSize(new Dimension(640, 620));
+        setSize(900, 840);
+        setMinimumSize(new Dimension(680, 640));
         setLocationRelativeTo(null);
+        showCard("dashboard");
         showIdleBanner();
     }
 
-    private JComponent buildToolbar() {
-        JPanel bar = new JPanel(new BorderLayout(10, 0));
-        bar.setBackground(PANEL);
-        bar.setBorder(BorderFactory.createEmptyBorder(10, 12, 10, 12));
+    private JComponent buildHeader() {
+        RoundedPanel card = new RoundedPanel(new BorderLayout(0, 16), CARD, 16, BORDER);
+        card.setBorder(BorderFactory.createEmptyBorder(18, 20, 18, 20));
+
+        JLabel title = new JLabel("<html><span style='color:#5b8cff'>Omni</span>"
+                + "<span style='color:#e8eaf0'>Ear</span></html>");
+        title.setFont(font(Font.BOLD, 24f));
+        JLabel subtitle = new JLabel("Real-time acoustic threat detection");
+        subtitle.setForeground(MUTED);
+        subtitle.setFont(font(Font.PLAIN, 12f));
+
+        JPanel titleBlock = transparent();
+        titleBlock.setLayout(new BoxLayout(titleBlock, BoxLayout.Y_AXIS));
+        title.setAlignmentX(Component.LEFT_ALIGNMENT);
+        subtitle.setAlignmentX(Component.LEFT_ALIGNMENT);
+        titleBlock.add(title);
+        titleBlock.add(Box.createVerticalStrut(2));
+        titleBlock.add(subtitle);
+
+        navDashboard.setFont(font(Font.BOLD, 13f));
+        navAlerts.setFont(font(Font.BOLD, 13f));
+        navDashboard.addActionListener(e -> showCard("dashboard"));
+        navAlerts.addActionListener(e -> showCard("alerts"));
+        JPanel nav = transparent();
+        nav.setLayout(new BoxLayout(nav, BoxLayout.X_AXIS));
+        nav.add(navDashboard);
+        nav.add(Box.createHorizontalStrut(8));
+        nav.add(navAlerts);
+
+        JPanel top = transparent(new BorderLayout(12, 0));
+        top.add(titleBlock, BorderLayout.WEST);
+        top.add(nav, BorderLayout.EAST);
 
         JLabel deviceLabel = new JLabel("Microphone");
         deviceLabel.setForeground(MUTED);
-        deviceLabel.setFont(deviceLabel.getFont().deriveFont(Font.PLAIN, 12f));
+        deviceLabel.setFont(font(Font.PLAIN, 12f));
 
         DefaultComboBoxModel<String> deviceModel = new DefaultComboBoxModel<>();
         deviceModel.addElement("<System default>");
@@ -228,71 +273,80 @@ public final class OmniEarFrame extends JFrame {
             deviceModel.addElement(name);
         }
         deviceCombo.setModel(deviceModel);
-        deviceCombo.setPreferredSize(new Dimension(340, 30));
-        deviceCombo.setBackground(PANEL_2);
+        deviceCombo.setPreferredSize(new Dimension(340, 34));
+        deviceCombo.setBackground(CARD_2);
         deviceCombo.setForeground(TEXT);
+        deviceCombo.setFont(font(Font.PLAIN, 12f));
 
-        JPanel left = new JPanel();
-        left.setOpaque(false);
+        JPanel left = transparent();
         left.setLayout(new BoxLayout(left, BoxLayout.X_AXIS));
         left.add(deviceLabel);
-        left.add(Box.createHorizontalStrut(8));
+        left.add(Box.createHorizontalStrut(10));
         left.add(deviceCombo);
 
-        startStop.setFocusPainted(false);
-        startStop.setFont(startStop.getFont().deriveFont(Font.BOLD, 13f));
-        startStop.setBackground(OK);
-        startStop.setForeground(Color.WHITE);
+        startStop.setFont(font(Font.BOLD, 13f));
         startStop.addActionListener(e -> toggle());
 
-        bar.add(left, BorderLayout.CENTER);
-        bar.add(startStop, BorderLayout.EAST);
-        return bar;
+        JPanel controls = transparent(new BorderLayout());
+        controls.add(left, BorderLayout.WEST);
+        controls.add(startStop, BorderLayout.EAST);
+
+        card.add(top, BorderLayout.NORTH);
+        card.add(controls, BorderLayout.SOUTH);
+        return card;
+    }
+
+    private void showCard(String name) {
+        cards.show(cardHost, name);
+        boolean dashboard = "dashboard".equals(name);
+        navDashboard.setBase(dashboard ? ACCENT : CARD_2);
+        navAlerts.setBase(dashboard ? CARD_2 : ACCENT);
     }
 
     private JComponent buildDashboard() {
-        JPanel wrap = new JPanel();
-        wrap.setBackground(BG);
+        JPanel wrap = new ScrollableColumn();
+        wrap.setOpaque(false);
         wrap.setLayout(new BoxLayout(wrap, BoxLayout.Y_AXIS));
-        wrap.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
+        wrap.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0));
 
-        banner.setOpaque(true);
-        banner.setFont(banner.getFont().deriveFont(Font.BOLD, 22f));
-        banner.setBorder(BorderFactory.createEmptyBorder(16, 12, 16, 12));
         banner.setAlignmentX(Component.LEFT_ALIGNMENT);
-        banner.setMaximumSize(new Dimension(Integer.MAX_VALUE, 64));
+        banner.setMaximumSize(new Dimension(Integer.MAX_VALUE, 60));
 
-        modeWarning.setForeground(WARN);
-        modeWarning.setFont(modeWarning.getFont().deriveFont(Font.PLAIN, 12f));
+        modeWarning.setForeground(MUTED);
+        modeWarning.setFont(font(Font.PLAIN, 12f));
         modeWarning.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         levelMeter.setAlignmentX(Component.LEFT_ALIGNMENT);
-        levelMeter.setMaximumSize(new Dimension(Integer.MAX_VALUE, 26));
+        levelMeter.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
 
         diagResult.setForeground(MUTED);
-        diagResult.setFont(diagResult.getFont().deriveFont(Font.PLAIN, 12f));
+        diagResult.setFont(font(Font.PLAIN, 12f));
         diagResult.setAlignmentX(Component.LEFT_ALIGNMENT);
 
-        diagButton.setFocusPainted(false);
+        diagButton.setFont(font(Font.BOLD, 12f));
         diagButton.setAlignmentX(Component.LEFT_ALIGNMENT);
         diagButton.addActionListener(e -> runMicDiagnostic());
 
         wrap.add(banner);
-        wrap.add(Box.createVerticalStrut(6));
+        wrap.add(Box.createVerticalStrut(8));
         wrap.add(modeWarning);
         wrap.add(Box.createVerticalStrut(12));
 
-        wrap.add(sectionTitle("INPUT LEVEL"));
-        wrap.add(Box.createVerticalStrut(6));
-        wrap.add(levelMeter);
-        wrap.add(Box.createVerticalStrut(8));
-        wrap.add(diagButton);
-        wrap.add(Box.createVerticalStrut(4));
-        wrap.add(diagResult);
-        wrap.add(Box.createVerticalStrut(16));
+        JPanel levelBody = transparent();
+        levelBody.setLayout(new BoxLayout(levelBody, BoxLayout.Y_AXIS));
+        levelMeter.setAlignmentX(Component.LEFT_ALIGNMENT);
+        diagButton.setAlignmentX(Component.LEFT_ALIGNMENT);
+        diagResult.setAlignmentX(Component.LEFT_ALIGNMENT);
+        levelBody.add(levelMeter);
+        levelBody.add(Box.createVerticalStrut(12));
+        levelBody.add(diagButton);
+        levelBody.add(Box.createVerticalStrut(6));
+        levelBody.add(diagResult);
+        wrap.add(card("INPUT LEVEL", levelBody));
+        wrap.add(Box.createVerticalStrut(14));
 
-        wrap.add(sectionTitle("CATEGORY SCORES"));
-        wrap.add(Box.createVerticalStrut(6));
+        JPanel barsBody = transparent();
+        barsBody.setLayout(new BoxLayout(barsBody, BoxLayout.Y_AXIS));
         for (CategoryRule rule : detectionConfig.categories) {
             ThreatCategory cat = rule.category();
             ScoreBar bar = new ScoreBar(CATEGORY_NAMES.get(cat), CATEGORY_COLORS.get(cat));
@@ -300,140 +354,111 @@ public final class OmniEarFrame extends JFrame {
             bar.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
             bar.setThreshold(rule.threshold());
             bars.put(cat, bar);
-            wrap.add(bar);
-            wrap.add(Box.createVerticalStrut(6));
+            barsBody.add(bar);
+            barsBody.add(Box.createVerticalStrut(8));
         }
-        wrap.add(Box.createVerticalGlue());
+        barsBody.add(Box.createVerticalGlue());
+        wrap.add(card("CATEGORY SCORES", barsBody));
+        wrap.add(Box.createVerticalStrut(8));
 
         JScrollPane scroll = new JScrollPane(wrap);
         scroll.setBorder(null);
         scroll.getViewport().setBackground(BG);
+        scroll.setOpaque(false);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
         return scroll;
     }
 
-    private JComponent buildWavTesting() {
-        JPanel panel = new JPanel(new BorderLayout(0, 10));
-        panel.setBackground(BG);
-        panel.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
-
-        wavPath.setBackground(PANEL_2);
-        wavPath.setForeground(TEXT);
-        wavPath.setCaretColor(TEXT);
-
-        wavBrowse.setFocusPainted(false);
-        wavBrowse.addActionListener(e -> chooseWav());
-        wavClassify.setFocusPainted(false);
-        wavClassify.setFont(wavClassify.getFont().deriveFont(Font.BOLD, 13f));
-        wavClassify.setBackground(OK);
-        wavClassify.setForeground(Color.WHITE);
-        wavClassify.addActionListener(e -> runWav(false));
-        wavAnalyze.setFocusPainted(false);
-        wavAnalyze.addActionListener(e -> runWav(true));
-
-        JPanel picker = new JPanel(new BorderLayout(8, 0));
-        picker.setBackground(BG);
-        picker.add(wavPath, BorderLayout.CENTER);
-        JPanel buttons = new JPanel();
-        buttons.setBackground(BG);
-        buttons.setLayout(new BoxLayout(buttons, BoxLayout.X_AXIS));
-        buttons.add(wavBrowse);
-        buttons.add(Box.createHorizontalStrut(6));
-        buttons.add(wavClassify);
-        buttons.add(Box.createHorizontalStrut(6));
-        buttons.add(wavAnalyze);
-        picker.add(buttons, BorderLayout.EAST);
-
-        wavResult.setEditable(false);
-        wavResult.setBackground(PANEL);
-        wavResult.setForeground(TEXT);
-        wavResult.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
-        wavResult.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        wavResult.setText("Pick a WAV and choose Classify (loudest 2 s window) or Analyze (whole file).\n"
-                + "Classification and analysis run on a background thread.");
-        JScrollPane scroll = new JScrollPane(wavResult);
-        scroll.getViewport().setBackground(PANEL);
-        scroll.setBorder(BorderFactory.createLineBorder(PANEL_2));
-
-        JLabel hint = new JLabel("<html><span style='color:#9a9aad'>Classify = one loudest window through the model. "
-                + "Analyze = every window through the full decision pipeline (with confirmation windows) "
-                + "and lists emitted events.</span></html>");
-        hint.setBorder(BorderFactory.createEmptyBorder(4, 0, 0, 0));
-
-        panel.add(picker, BorderLayout.NORTH);
-        panel.add(scroll, BorderLayout.CENTER);
-        panel.add(hint, BorderLayout.SOUTH);
-        return panel;
-    }
-
     private JComponent buildAlertHistory() {
-        JPanel panel = new JPanel(new BorderLayout(0, 8));
-        panel.setBackground(BG);
-        panel.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
+        JPanel panel = transparent(new BorderLayout(0, 12));
 
-        alertTable.setBackground(PANEL);
+        alertTable.setBackground(CARD);
         alertTable.setForeground(TEXT);
-        alertTable.setGridColor(PANEL_2);
-        alertTable.setRowHeight(26);
-        alertTable.setFont(alertTable.getFont().deriveFont(Font.PLAIN, 13f));
+        alertTable.setGridColor(CARD_2);
+        alertTable.setRowHeight(30);
+        alertTable.setShowVerticalLines(false);
+        alertTable.setFont(font(Font.PLAIN, 13f));
+        alertTable.setSelectionBackground(CARD_2);
+        alertTable.setSelectionForeground(TEXT);
         alertTable.getTableHeader().setReorderingAllowed(false);
+        alertTable.getTableHeader().setBackground(CARD_2);
+        alertTable.getTableHeader().setForeground(MUTED);
+        alertTable.getTableHeader().setFont(font(Font.BOLD, 12f));
         alertTable.setFillsViewportHeight(true);
         alertTable.getColumnModel().getColumn(1).setCellRenderer(new PriorityCellRenderer());
         alertTable.getColumnModel().getColumn(2).setCellRenderer(new CategoryCellRenderer());
-        alertTable.getColumnModel().getColumn(1).setMaxWidth(40);
+        alertTable.getColumnModel().getColumn(1).setMaxWidth(44);
+        alertTable.getColumnModel().getColumn(1).setMinWidth(44);
 
         JScrollPane scroll = new JScrollPane(alertTable);
-        scroll.getViewport().setBackground(PANEL);
-        scroll.setBorder(BorderFactory.createLineBorder(PANEL_2));
+        scroll.getViewport().setBackground(CARD);
+        scroll.setBorder(BorderFactory.createLineBorder(BORDER));
+        scroll.setOpaque(false);
 
-        JButton export = new JButton("Export CSV...");
-        export.setFocusPainted(false);
+        RoundedButton export = new RoundedButton("Export CSV...", CARD_2, 10);
+        export.setFont(font(Font.BOLD, 12f));
         export.addActionListener(e -> exportAlerts());
-        JButton clear = new JButton("Clear");
-        clear.setFocusPainted(false);
+        RoundedButton clear = new RoundedButton("Clear", CARD_2, 10);
+        clear.setFont(font(Font.BOLD, 12f));
         clear.addActionListener(e -> clearAlerts());
 
         alertCount.setForeground(MUTED);
-        alertCount.setFont(alertCount.getFont().deriveFont(Font.PLAIN, 12f));
+        alertCount.setFont(font(Font.BOLD, 12f));
 
-        JPanel south = new JPanel(new BorderLayout(8, 0));
-        south.setBackground(BG);
-        JPanel actions = new JPanel();
-        actions.setBackground(BG);
+        JPanel actions = transparent();
         actions.setLayout(new BoxLayout(actions, BoxLayout.X_AXIS));
         actions.add(export);
-        actions.add(Box.createHorizontalStrut(6));
+        actions.add(Box.createHorizontalStrut(8));
         actions.add(clear);
+
+        JPanel south = transparent(new BorderLayout(8, 0));
         south.add(alertCount, BorderLayout.WEST);
         south.add(actions, BorderLayout.EAST);
 
-        panel.add(scroll, BorderLayout.CENTER);
-        panel.add(south, BorderLayout.SOUTH);
+        JPanel body = transparent(new BorderLayout(0, 12));
+        body.add(scroll, BorderLayout.CENTER);
+        body.add(south, BorderLayout.SOUTH);
+        panel.add(card("ALERT HISTORY", body), BorderLayout.CENTER);
         return panel;
     }
 
     private JComponent buildStatusBar() {
-        JPanel bar = new JPanel(new BorderLayout());
-        bar.setOpaque(false);
+        JPanel bar = transparent(new BorderLayout());
         status.setForeground(MUTED);
+        status.setFont(font(Font.PLAIN, 11f));
         stats.setForeground(MUTED);
+        stats.setFont(font(Font.PLAIN, 11f));
         stats.setHorizontalAlignment(SwingConstants.RIGHT);
         bar.add(status, BorderLayout.WEST);
         bar.add(stats, BorderLayout.EAST);
         return bar;
     }
 
-    private static JLabel sectionTitle(String text) {
-        JLabel label = new JLabel(text);
-        label.setForeground(MUTED);
-        label.setFont(label.getFont().deriveFont(Font.BOLD, 11f));
-        label.setAlignmentX(Component.LEFT_ALIGNMENT);
-        return label;
+    private static JPanel transparent() {
+        JPanel p = new JPanel();
+        p.setOpaque(false);
+        return p;
     }
 
-    // ---- journal / priorities ----------------------------------------------
+    private static JPanel transparent(LayoutManager layout) {
+        JPanel p = new JPanel(layout);
+        p.setOpaque(false);
+        return p;
+    }
 
-    /** Local alert priority: P0 critical, P1 high, P4 informational. */
+    /** A rounded card with a small uppercase title and an optional subtitle. */
+    private static JComponent card(String title, JComponent body) {
+        RoundedPanel card = new RoundedPanel(new BorderLayout(0, 12), CARD, 14, BORDER);
+        card.setBorder(BorderFactory.createEmptyBorder(16, 18, 16, 18));
+        JLabel label = new JLabel(title);
+        label.setForeground(MUTED);
+        label.setFont(font(Font.BOLD, 11f));
+        card.add(label, BorderLayout.NORTH);
+        card.add(body, BorderLayout.CENTER);
+        return card;
+    }
+
+    // ---- journal / priorities ----------------------------------------------    /** Local alert priority: P0 critical, P1 high, P4 informational. */
     private static String priority(ThreatCategory category) {
         return switch (category) {
             case GUNSHOT, EXPLOSION -> "P0";
@@ -447,7 +472,7 @@ public final class OmniEarFrame extends JFrame {
         return switch (p) {
             case "P0" -> ALERT;
             case "P1" -> WARN;
-            case "P4" -> new Color(0x42a5f5);
+            case "P4" -> ACCENT;
             default -> MUTED;
         };
     }
@@ -619,31 +644,26 @@ public final class OmniEarFrame extends JFrame {
 
     private void flashAlert(ThreatEvent event) {
         String name = CATEGORY_NAMES.getOrDefault(event.category(), event.category().name());
-        banner.setText(String.format("%s  \u26a0  %s   %.2f",
-                priority(event.category()), name, event.score()));
-        banner.setBackground(ALERT);
-        banner.setForeground(Color.WHITE);
+        banner.setStatus(String.format("%s  \u26a0  %s   %.2f",
+                priority(event.category()), name, event.score()), ALERT, Color.WHITE, Color.WHITE);
         bannerReset.restart();
     }
 
     private void showMonitoringBanner() {
         if (running) {
-            banner.setText("\u25cf  MONITORING  " + prioritySummary());
-            banner.setBackground(new Color(0x15351f));
-            banner.setForeground(new Color(0x7ee2a8));
+            banner.setStatus("MONITORING  \u00b7  " + prioritySummary(),
+                    new Color(0x10251a), new Color(0x7ee2a8), OK);
         } else {
             showIdleBanner();
         }
     }
 
     private static String prioritySummary() {
-        return "P0 gunshot/explosion \u00b7 P1 scream/impact/glass \u00b7 P4 siren";
+        return "P0 gunshot/explosion  \u00b7  P1 scream/impact/glass  \u00b7  P4 siren";
     }
 
     private void showIdleBanner() {
-        banner.setText("IDLE");
-        banner.setBackground(PANEL);
-        banner.setForeground(MUTED);
+        banner.setStatus("IDLE  \u00b7  press Start listening to monitor", CARD_2, MUTED, MUTED);
     }
 
     private void stopPipeline(String message) {
@@ -682,18 +702,6 @@ public final class OmniEarFrame extends JFrame {
         model = null;
     }
 
-    private void closeTestModel() {
-        CedMiniThreatModel m = testModel;
-        if (m != null) {
-            try {
-                m.close();
-            } catch (RuntimeException ignored) {
-                // best effort on shutdown
-            }
-        }
-        testModel = null;
-    }
-
     private void onCaptureEnded() {
         if (running) {
             stopPipeline("Capture ended");
@@ -711,7 +719,7 @@ public final class OmniEarFrame extends JFrame {
     private void setRunningUi(boolean isRunning) {
         startStop.setEnabled(true);
         startStop.setText(isRunning ? "Stop" : "Start listening");
-        startStop.setBackground(isRunning ? ALERT : OK);
+        startStop.setBase(isRunning ? ALERT : OK);
         deviceCombo.setEnabled(!isRunning);
         diagButton.setEnabled(!isRunning);
         modeWarning.setText(isRunning
@@ -737,7 +745,6 @@ public final class OmniEarFrame extends JFrame {
             cap.close();
         }
         closeModel();
-        closeTestModel();
         dispose();
         System.exit(0);
     }
@@ -862,175 +869,6 @@ public final class OmniEarFrame extends JFrame {
         }
     }
 
-    // ---- WAV testing --------------------------------------------------------
-
-    private void chooseWav() {
-        JFileChooser chooser = new JFileChooser(wavPath.getText().isBlank()
-                ? new java.io.File(".")
-                : new java.io.File(wavPath.getText()).getParentFile());
-        chooser.setFileFilter(new FileNameExtensionFilter("WAV audio (*.wav)", "wav"));
-        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            wavPath.setText(chooser.getSelectedFile().getAbsolutePath());
-        }
-    }
-
-    private void runWav(boolean analyzeAll) {
-        String path = wavPath.getText().trim();
-        if (path.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Choose a WAV file first.",
-                    "OmniEar", JOptionPane.INFORMATION_MESSAGE);
-            return;
-        }
-        wavClassify.setEnabled(false);
-        wavAnalyze.setEnabled(false);
-        wavResult.setText((analyzeAll ? "Analyzing " : "Classifying ") + path + " ...");
-        Thread t = new Thread(() -> {
-            String out;
-            try {
-                out = analyzeAll ? analyzeWavFile(Path.of(path)) : classifyWavFile(Path.of(path));
-            } catch (Exception e) {
-                LOG.warn("WAV test failed for {}", path, e);
-                out = "Failed: " + e.getMessage();
-            }
-            String text = out;
-            SwingUtilities.invokeLater(() -> {
-                wavResult.setText(text);
-                wavResult.setCaretPosition(0);
-                wavClassify.setEnabled(true);
-                wavAnalyze.setEnabled(true);
-            });
-        }, "wav-test");
-        t.setDaemon(true);
-        t.start();
-    }
-
-    /** Lazily loads a dedicated model for offline WAV testing (kept out of the live worker). */
-    private CedMiniThreatModel testModel() throws Exception {
-        CedMiniThreatModel m = testModel;
-        if (m == null) {
-            synchronized (this) {
-                if (testModel == null) {
-                    testModel = CedMiniThreatModel.fromModelsDir(modelsDir, modelConfig);
-                }
-                m = testModel;
-            }
-        }
-        return m;
-    }
-
-    private String classifyWavFile(Path file) throws Exception {
-        int sr = modelConfig.sr;
-        float[] samples = AudioPreprocessor.readMono(file, sr);
-        StringBuilder sb = new StringBuilder();
-        sb.append("FILE     ").append(file.getFileName()).append('\n');
-        sb.append(String.format("LENGTH   %.2f s @ %d Hz (%d samples)%n",
-                samples.length / (double) sr, sr, samples.length));
-        if (samples.length == 0) {
-            sb.append("\nNo audio samples in file.");
-            return sb.toString();
-        }
-        int win = modelConfig.windowSamples();
-        int off = loudestOffset(samples, win, modelConfig.hopSamples());
-        float[] window = AudioPreprocessor.window(samples, off, win);
-        sb.append(String.format("WINDOW   loudest %.1f s at t=%.2f s%n",
-                win / (double) sr, off / (double) sr));
-
-        ModelPrediction prediction = testModel().predict(AudioPreprocessor.normalizePeak(window));
-        MappedScores mapped = mapWithGlass(prediction, window);
-
-        sb.append("\nMODEL TOP-5\n");
-        int rank = 0;
-        for (Map.Entry<String, Float> e : prediction.topK(5)) {
-            sb.append(String.format("  %d. %-14s %.3f%n", ++rank, e.getKey(), e.getValue()));
-        }
-        sb.append("\nCATEGORY SCORES\n");
-        for (CategoryRule rule : detectionConfig.categories) {
-            ThreatCategory cat = rule.category();
-            float score = mapped.score(cat);
-            boolean hot = score >= rule.threshold();
-            sb.append(String.format("  %-16s %.3f  (thr %.3f)%s%n",
-                    CATEGORY_NAMES.get(cat), score, rule.threshold(), hot ? "  <-- ALERT" : ""));
-        }
-        ThreatCategory best = mapped.strongest();
-        float bestScore = mapped.strongestScore();
-        boolean alert = bestScore >= thresholds.getOrDefault(best, 1f) && best != ThreatCategory.NORMAL;
-        sb.append("\nVERDICT  ").append(CATEGORY_NAMES.getOrDefault(best, best.name()))
-                .append("   priority ").append(priority(best))
-                .append(String.format("   score %.3f", bestScore))
-                .append(alert ? "   -> ALERT" : "   -> below threshold");
-        return sb.toString();
-    }
-
-    private String analyzeWavFile(Path file) throws Exception {
-        int sr = modelConfig.sr;
-        int win = modelConfig.windowSamples();
-        int hop = modelConfig.hopSamples();
-        float[] samples = AudioPreprocessor.readMono(file, sr);
-        StringBuilder sb = new StringBuilder();
-        sb.append("FILE     ").append(file.getFileName()).append('\n');
-        sb.append(String.format("LENGTH   %.2f s @ %d Hz%n", samples.length / (double) sr, sr));
-        if (samples.length == 0) {
-            sb.append("\nNo audio samples in file.");
-            return sb.toString();
-        }
-        float[][] wins = AudioPreprocessor.windows(samples, modelConfig);
-        sb.append("WINDOWS  ").append(wins.length).append(String.format("  (%.1f s / %.1f s hop)%n",
-                win / (double) sr, hop / (double) sr));
-
-        CedMiniThreatModel m = testModel();
-        ScoreMapper mapper = new ScoreMapper(detectionConfig);
-        TemporalDecisionEngine engine = new TemporalDecisionEngine(detectionConfig);
-        List<ThreatEvent> events = new ArrayList<>();
-        for (int i = 0; i < wins.length; i++) {
-            ModelPrediction prediction = m.predict(AudioPreprocessor.normalizePeak(wins[i]));
-            MappedScores mapped = mapWithGlass(prediction, wins[i]);
-            long endMs = (long) ((i * hop + win) * 1000L / sr);
-            events.addAll(engine.update(endMs, mapped));
-        }
-        sb.append("\nEVENTS   ").append(events.size()).append('\n');
-        for (ThreatEvent event : events) {
-            sb.append(String.format("  %6.2f s  %-16s %s  score %.3f  via %s%n",
-                    event.endMs() / 1000.0,
-                    CATEGORY_NAMES.getOrDefault(event.category(), event.category().name()),
-                    priority(event.category()),
-                    event.score(),
-                    event.drivingLabel()));
-        }
-        if (events.isEmpty()) {
-            sb.append("  (no category crossed its confirmation threshold)");
-        }
-        return sb.toString();
-    }
-
-    private MappedScores mapWithGlass(ModelPrediction prediction, float[] window) {
-        MappedScores mapped = new ScoreMapper(detectionConfig).map(prediction);
-        if (GLASS_DETECTOR.detects(window)) {
-            mapped = mapped.withScore(ThreatCategory.GLASS_BREAK, 1f, "glass(hf)");
-        }
-        return mapped;
-    }
-
-    /** Offset of the highest-energy window of length {@code win}, stepping by {@code hop}. */
-    private static int loudestOffset(float[] samples, int win, int hop) {
-        if (samples.length <= win) {
-            return 0;
-        }
-        int best = 0;
-        double bestEnergy = -1;
-        for (int o = 0; o + win <= samples.length; o += Math.max(1, hop)) {
-            double sum = 0;
-            for (int i = 0; i < win; i++) {
-                float v = samples[o + i];
-                sum += (double) v * v;
-            }
-            if (sum > bestEnergy) {
-                bestEnergy = sum;
-                best = o;
-            }
-        }
-        return best;
-    }
-
     // ---- alert history ------------------------------------------------------
 
     private void clearAlerts() {
@@ -1044,9 +882,9 @@ public final class OmniEarFrame extends JFrame {
                     "OmniEar", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
-        JFileChooser chooser = new JFileChooser(".");
+        javax.swing.JFileChooser chooser = new javax.swing.JFileChooser(".");
         chooser.setSelectedFile(new java.io.File("omniear-alerts.csv"));
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
+        if (chooser.showSaveDialog(this) != javax.swing.JFileChooser.APPROVE_OPTION) {
             return;
         }
         Path out = chooser.getSelectedFile().toPath();
@@ -1083,13 +921,161 @@ public final class OmniEarFrame extends JFrame {
 
     // ---- components ---------------------------------------------------------
 
+    /** Transparent column that fills the scroll viewport width but not its height. */
+    private static final class ScrollableColumn extends JPanel implements Scrollable {
+        @Override
+        public Dimension getPreferredScrollableViewportSize() {
+            return getPreferredSize();
+        }
+
+        @Override
+        public int getScrollableUnitIncrement(java.awt.Rectangle visibleRect, int orientation, int direction) {
+            return 16;
+        }
+
+        @Override
+        public int getScrollableBlockIncrement(java.awt.Rectangle visibleRect, int orientation, int direction) {
+            return 80;
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportWidth() {
+            return true;
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportHeight() {
+            return false;
+        }
+    }
+
+    /** Rounded, hover-aware button used for all actions and navigation pills. */
+    private static final class RoundedButton extends JButton {
+        private Color base;
+        private final int radius;
+        private boolean hover;
+
+        RoundedButton(String text, Color base, int radius) {
+            super(text);
+            this.base = base;
+            this.radius = radius;
+            setContentAreaFilled(false);
+            setFocusPainted(false);
+            setOpaque(false);
+            setForeground(Color.WHITE);
+            setFont(font(Font.BOLD, 13f));
+            setBorder(BorderFactory.createEmptyBorder(9, 18, 9, 18));
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseEntered(MouseEvent e) {
+                    hover = true;
+                    repaint();
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    hover = false;
+                    repaint();
+                }
+            });
+        }
+
+        void setBase(Color base) {
+            this.base = base;
+            repaint();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            Color fill = isEnabled() ? base : base.darker();
+            g2.setColor(hover && isEnabled() ? fill.brighter() : fill);
+            g2.fillRoundRect(0, 0, getWidth(), getHeight(), radius, radius);
+            g2.dispose();
+            super.paintComponent(g);
+        }
+    }
+
+    /** Rounded panel with an optional border, used for cards and the header. */
+    private static final class RoundedPanel extends JPanel {
+        private final int radius;
+        private final Color fill;
+        private final Color border;
+
+        RoundedPanel(LayoutManager layout, Color fill, int radius, Color border) {
+            super(layout);
+            this.radius = radius;
+            this.fill = fill;
+            this.border = border;
+            setOpaque(false);
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setColor(fill);
+            g2.fillRoundRect(0, 0, getWidth(), getHeight(), radius, radius);
+            if (border != null) {
+                g2.setColor(border);
+                g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, radius, radius);
+            }
+            g2.dispose();
+            super.paintComponent(g);
+        }
+    }
+
+    /** Full-width rounded status banner with a leading status dot. */
+    private static final class StatusBanner extends JComponent {
+        private String text = "IDLE";
+        private Color bg = CARD_2;
+        private Color fg = MUTED;
+        private Color dot = MUTED;
+
+        StatusBanner() {
+            setOpaque(false);
+            setPreferredSize(new Dimension(100, 60));
+        }
+
+        void setStatus(String text, Color bg, Color fg, Color dot) {
+            this.text = text;
+            this.bg = bg;
+            this.fg = fg;
+            this.dot = dot;
+            repaint();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            int w = getWidth();
+            int h = getHeight();
+            g2.setColor(bg);
+            g2.fillRoundRect(0, 0, w, h, 14, 14);
+            int r = 7;
+            int cx = 22;
+            g2.setColor(dot);
+            g2.fillOval(cx, h / 2 - r, r * 2, r * 2);
+            g2.setFont(font(Font.BOLD, 18f));
+            g2.setColor(fg);
+            FontMetrics fm = g2.getFontMetrics();
+            int ty = (h - fm.getHeight()) / 2 + fm.getAscent();
+            g2.drawString(text, cx + r * 2 + 14, ty);
+            g2.dispose();
+        }
+    }
+
     private static final class LevelMeter extends JComponent {
         private volatile float level;
         private volatile float peak;
 
         LevelMeter() {
             setOpaque(false);
-            setPreferredSize(new Dimension(100, 24));
+            setPreferredSize(new Dimension(100, 26));
         }
 
         void setLevels(float level, float peak) {
@@ -1104,16 +1090,17 @@ public final class OmniEarFrame extends JFrame {
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             int w = getWidth();
             int h = getHeight();
-            g2.setColor(PANEL);
+            g2.setColor(CARD_2);
             g2.fillRoundRect(0, 0, w, h, h, h);
             int fill = (int) (level * (w - 2));
             if (fill > 0) {
-                g2.setColor(levelColor(level));
+                g2.setPaint(new GradientPaint(1, 0, levelColor(level).darker(), Math.max(fill, 2), 0,
+                        levelColor(level)));
                 g2.fillRoundRect(1, 1, fill, h - 2, h - 2, h - 2);
             }
             int px = 1 + (int) (peak * (w - 2));
-            g2.setColor(new Color(0xffffff));
-            g2.fillRect(Math.min(px, w - 2), 1, 2, h - 2);
+            g2.setColor(Color.WHITE);
+            g2.fillRoundRect(Math.min(px, w - 3), 1, 3, h - 2, 2, 2);
             g2.dispose();
         }
 
@@ -1122,7 +1109,7 @@ public final class OmniEarFrame extends JFrame {
                 return ALERT;
             }
             if (level > 0.6f) {
-                return new Color(0xffd54f);
+                return WARN;
             }
             return OK;
         }
@@ -1158,26 +1145,28 @@ public final class OmniEarFrame extends JFrame {
             g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
             int w = getWidth();
             int h = getHeight();
-            g2.setColor(PANEL);
-            g2.fillRoundRect(0, 0, w, h, 8, 8);
+            g2.setColor(CARD_2);
+            g2.fillRoundRect(0, 0, w, h, 9, 9);
 
             boolean hot = score >= threshold;
             int fill = (int) (Math.min(score, 1f) * (w - 2));
             if (fill > 0) {
-                g2.setColor(hot ? color : color.darker().darker());
-                g2.fillRoundRect(1, 1, fill, h - 2, 7, 7);
+                Color c = hot ? color : color.darker().darker();
+                g2.setPaint(new GradientPaint(1, 0, c.darker(), Math.max(fill, 2), 0, c.brighter()));
+                g2.fillRoundRect(1, 1, fill, h - 2, 8, 8);
             }
 
             int tick = (int) (Math.min(threshold, 1f) * (w - 2));
-            g2.setColor(new Color(0xf0f0f5));
-            g2.fillRect(tick + 1, 3, 2, h - 6);
+            g2.setColor(new Color(0xffffff));
+            g2.fillRoundRect(tick + 1, 4, 2, h - 8, 2, 2);
 
-            g2.setFont(getFont().deriveFont(Font.BOLD, 12f));
+            g2.setFont(font(Font.BOLD, 12f));
             g2.setColor(hot ? Color.WHITE : TEXT);
-            g2.drawString(name, 10, h / 2 + 5);
+            FontMetrics fm = g2.getFontMetrics();
+            int ty = (h - fm.getHeight()) / 2 + fm.getAscent();
+            g2.drawString(name, 12, ty);
             String value = String.format("%.2f", score);
-            int vw = g2.getFontMetrics().stringWidth(value);
-            g2.drawString(value, w - vw - 10, h / 2 + 5);
+            g2.drawString(value, w - fm.stringWidth(value) - 12, ty);
             g2.dispose();
         }
     }
@@ -1187,7 +1176,7 @@ public final class OmniEarFrame extends JFrame {
         public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected,
                                                        boolean hasFocus, int row, int column) {
             Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-            c.setBackground(isSelected ? table.getSelectionBackground() : PANEL);
+            c.setBackground(isSelected ? CARD_2 : CARD);
             c.setForeground(TEXT);
             if (value != null) {
                 for (Map.Entry<ThreatCategory, String> e : CATEGORY_NAMES.entrySet()) {
@@ -1206,9 +1195,9 @@ public final class OmniEarFrame extends JFrame {
         public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected,
                                                        boolean hasFocus, int row, int column) {
             Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-            c.setBackground(isSelected ? table.getSelectionBackground() : PANEL);
+            c.setBackground(isSelected ? CARD_2 : CARD);
             setHorizontalAlignment(SwingConstants.CENTER);
-            setFont(getFont().deriveFont(Font.BOLD, 12f));
+            setFont(font(Font.BOLD, 12f));
             c.setForeground(value == null ? MUTED : priorityColor(value.toString()));
             return c;
         }

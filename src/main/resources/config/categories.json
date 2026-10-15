@@ -18,17 +18,19 @@
     {
       "category": "EXPLOSION",
       "labels": { "explosion": 1.0 },
-      "threshold": 0.821,
-      "confirmWindows": 3,
-      "confirmOf": 2,
+      "threshold": 0.71,
+      "transform": "movavg",
+      "param": 3,
+      "confirmWindows": 1,
       "cooldownMs": 5000
     },
     {
       "category": "IMPACT_CRASH",
       "labels": { "vehicle_crash": 1.0, "knock": 0.5 },
-      "threshold": 0.201,
-      "confirmWindows": 3,
-      "confirmOf": 2,
+      "threshold": 0.64,
+      "transform": "movavg",
+      "param": 3,
+      "confirmWindows": 1,
       "cooldownMs": 5000
     },
     {

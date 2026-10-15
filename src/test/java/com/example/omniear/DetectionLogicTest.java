@@ -10,6 +10,7 @@ import com.example.omniear.detection.ScoreMapper;
 import com.example.omniear.detection.TemporalDecisionEngine;
 import com.example.omniear.detection.ThreatCategory;
 import com.example.omniear.detection.ThreatEvent;
+import com.example.omniear.detection.TransformKind;
 import com.example.omniear.model.ModelPrediction;
 import java.util.EnumMap;
 import java.util.List;
@@ -93,8 +94,29 @@ class DetectionLogicTest {
         assertEquals(1, engine.update(2000, hot).size(), "two of three fires");
     }
 
-    private static MappedScores mapped(ThreatCategory category, float score) {
-        Map<ThreatCategory, Float> scores = new EnumMap<>(ThreatCategory.class);
+    @Test
+    void movingAverageAttenuatesIsolatedSpikeButKeepsSustainedAndFirstWindow() {
+        CategoryRule rule = new CategoryRule(ThreatCategory.SIREN, Map.of("siren", 1.0f),
+                0.6f, 1, 1, 0L, TransformKind.MOVAVG, 3f);
+
+        // A spike that first appears in the first window is preserved (history is short).
+        TemporalDecisionEngine fresh = new TemporalDecisionEngine(config(rule));
+        assertEquals(1, fresh.update(0, mapped(ThreatCategory.SIREN, 0.9f)).size(),
+                "first window is not diluted");
+
+        // A lone mid-stream spike is averaged down below the threshold.
+        TemporalDecisionEngine engine = new TemporalDecisionEngine(config(rule));
+        assertTrue(engine.update(0, mapped(ThreatCategory.SIREN, 0.1f)).isEmpty());
+        assertTrue(engine.update(1000, mapped(ThreatCategory.SIREN, 0.1f)).isEmpty());
+        assertTrue(engine.update(2000, mapped(ThreatCategory.SIREN, 0.9f)).isEmpty(),
+                "isolated spike (0.1+0.1+0.9)/3 = 0.37 stays below 0.6");
+
+        // The same spike sustains once neighbours rise, so it fires.
+        assertEquals(1, engine.update(3000, mapped(ThreatCategory.SIREN, 0.9f)).size(),
+                "sustained (0.1+0.9+0.9)/3 = 0.63 fires");
+    }
+
+    private static MappedScores mapped(ThreatCategory category, float score) {        Map<ThreatCategory, Float> scores = new EnumMap<>(ThreatCategory.class);
         Map<ThreatCategory, String> labels = new EnumMap<>(ThreatCategory.class);
         scores.put(category, score);
         labels.put(category, category.name().toLowerCase());

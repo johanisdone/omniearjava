@@ -1,6 +1,11 @@
 package com.example.omniear.detection;
 
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonDeserializationContext;
+import com.google.gson.JsonDeserializer;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParseException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -23,7 +28,18 @@ public final class DetectionConfig {
     /** Windows whose top category score is below this are considered "quiet". */
     public float uncertainFloor = 0.3f;
 
-    private static final Gson GSON = new Gson();
+    private static final Gson GSON = new GsonBuilder()
+            // config writes transform kinds in lower case ("movavg"); Gson's default
+            // enum adapter is case-sensitive and would silently map it to null.
+            .registerTypeAdapter(TransformKind.class, new JsonDeserializer<TransformKind>() {
+                @Override
+                public TransformKind deserialize(JsonElement json, java.lang.reflect.Type typeOfT,
+                                                 JsonDeserializationContext context)
+                        throws JsonParseException {
+                    return TransformKind.parse(json.getAsString());
+                }
+            })
+            .create();
 
     public static DetectionConfig load(Path json) throws IOException {
         try (Reader r = Files.newBufferedReader(json, StandardCharsets.UTF_8)) {

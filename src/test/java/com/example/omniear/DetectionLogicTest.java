@@ -80,6 +80,19 @@ class DetectionLogicTest {
         assertEquals(1, engine.update(3000, hot).size());
     }
 
+    @Test
+    void twoOfThreeWindowsFires() {
+        DetectionConfig cfg = config(
+                new CategoryRule(ThreatCategory.GUNSHOT, Map.of("gunshot", 1.0f), 0.5f, 3, 2, 0));
+        TemporalDecisionEngine engine = new TemporalDecisionEngine(cfg);
+        MappedScores hot = mapped(ThreatCategory.GUNSHOT, 0.9f);
+        MappedScores cold = mapped(ThreatCategory.GUNSHOT, 0.1f);
+
+        assertTrue(engine.update(0, hot).isEmpty());
+        assertTrue(engine.update(1000, cold).isEmpty(), "one of three is not enough");
+        assertEquals(1, engine.update(2000, hot).size(), "two of three fires");
+    }
+
     private static MappedScores mapped(ThreatCategory category, float score) {
         Map<ThreatCategory, Float> scores = new EnumMap<>(ThreatCategory.class);
         Map<ThreatCategory, String> labels = new EnumMap<>(ThreatCategory.class);

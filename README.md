@@ -164,7 +164,7 @@ git push origin v0.1.0
 ```
 
 To publish the landing page, enable **Settings > Pages > Source: Deploy from a
-branch > master > /docs**.
+branch > main > /docs**.
 
 ## Licensing
 

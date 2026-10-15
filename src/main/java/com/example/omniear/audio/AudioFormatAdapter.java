@@ -18,8 +18,13 @@ public final class AudioFormatAdapter {
     private final int channels;
     private final int targetRate;
     private final double step; // input samples per output sample
-    private double carry;
-    private float prev;
+
+    // Streaming linear-resampler state. Mirrors AudioPreprocessor.resampleLinear so
+    // live capture produces the same samples the model was trained and validated on.
+    private float[] history = new float[8192];
+    private int historyLen;
+    private long historyStart; // global index of history[0]
+    private double pos;        // global position of the next output sample
 
     public AudioFormatAdapter(AudioFormat source, int targetRate) {
         if (source.getSampleSizeInBits() != 16) {
@@ -29,8 +34,8 @@ public final class AudioFormatAdapter {
         this.channels = Math.max(1, source.getChannels());
         this.targetRate = targetRate;
         this.step = sourceRate / (double) targetRate;
-        this.carry = 0.0;
-        this.prev = 0f;
+        this.historyStart = 0L;
+        this.pos = 0.0;
     }
 
     public int targetRate() {
@@ -61,25 +66,36 @@ public final class AudioFormatAdapter {
     }
 
     private float[] resample(float[] in) {
-        // Conceptual input stream: [prev, in[0], in[1], ...]
-        int n = in.length;
-        float[] work = new float[n + 1];
-        work[0] = prev;
-        System.arraycopy(in, 0, work, 1, n);
+        if (historyLen + in.length > history.length) {
+            int cap = Math.max(historyLen + in.length, history.length * 2);
+            float[] grown = new float[cap];
+            System.arraycopy(history, 0, grown, 0, historyLen);
+            history = grown;
+        }
+        System.arraycopy(in, 0, history, historyLen, in.length);
+        historyLen += in.length;
 
-        double pos = carry;
-        List<Float> out = new ArrayList<>(Math.max(1, (int) (n / step) + 2));
-        while (pos < work.length - 1) {
-            int i = (int) pos;
-            double frac = pos - i;
-            out.add((float) (work[i] * (1 - frac) + work[i + 1] * frac));
+        List<Float> out = new ArrayList<>(Math.max(1, (int) (in.length / step) + 2));
+        long lastGlobal = historyStart + historyLen - 1;
+        while (true) {
+            long i0g = (long) Math.floor(pos);
+            if (i0g + 1 > lastGlobal) {
+                break;
+            }
+            int i0 = (int) (i0g - historyStart);
+            double frac = pos - i0g;
+            out.add((float) (history[i0] * (1 - frac) + history[i0 + 1] * frac));
             pos += step;
         }
-        carry = pos - (work.length - 1);
-        if (carry < 0) {
-            carry = 0;
+
+        // Drop samples strictly before the next interpolation anchor, keeping one.
+        long anchor = (long) Math.floor(pos);
+        int drop = (int) Math.min(anchor - historyStart, historyLen - 1);
+        if (drop > 0) {
+            System.arraycopy(history, drop, history, 0, historyLen - drop);
+            historyLen -= drop;
+            historyStart += drop;
         }
-        prev = work[work.length - 1];
 
         float[] result = new float[out.size()];
         for (int i = 0; i < result.length; i++) {

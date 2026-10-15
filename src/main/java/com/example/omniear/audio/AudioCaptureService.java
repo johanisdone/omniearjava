@@ -28,6 +28,7 @@ public final class AudioCaptureService implements AutoCloseable {
     private volatile boolean running;
     private Thread thread;
     private long nextWindowAt;
+    private boolean emittedAny;
 
     public AudioCaptureService(AudioSource source,
                                int modelRate,
@@ -37,7 +38,9 @@ public final class AudioCaptureService implements AutoCloseable {
                                Runnable onEndOfStream) {
         this.source = source;
         this.adapter = new AudioFormatAdapter(source.format(), modelRate);
-        this.buffer = new RollingAudioBuffer(windowSamples);
+        // Retain one extra hop so a window ending exactly at a fixed boundary can
+        // still be materialized after a read chunk overshoots that boundary.
+        this.buffer = new RollingAudioBuffer(windowSamples + hopSamples);
         this.modelRate = modelRate;
         this.windowSamples = windowSamples;
         this.hopSamples = hopSamples;
@@ -66,15 +69,25 @@ public final class AudioCaptureService implements AutoCloseable {
                 long total = buffer.totalWritten();
                 if (total >= nextWindowAt) {
                     long startSample = nextWindowAt - windowSamples;
-                    float[] samples = buffer.lastWindow(windowSamples);
+                    float[] samples = buffer.windowEndingAt(nextWindowAt, windowSamples);
                     long audioEndMs = (nextWindowAt * 1000L) / modelRate;
                     windowSink.accept(new AudioWindow(
                             samples, startSample, audioEndMs, System.currentTimeMillis()));
+                    emittedAny = true;
                     // Advance and skip stale boundaries if capture outpaced inference.
                     do {
                         nextWindowAt += hopSamples;
                     } while (nextWindowAt <= total);
                 }
+            }
+            // A stream shorter than one window (e.g. a short clip/recording) never
+            // reaches a boundary; emit a single zero-padded window so it is still
+            // analysed, matching the offline harness.
+            if (!emittedAny && buffer.totalWritten() > 0) {
+                float[] samples = buffer.windowEndingAt(windowSamples, windowSamples);
+                windowSink.accept(new AudioWindow(
+                        samples, 0, (windowSamples * 1000L) / modelRate, System.currentTimeMillis()));
+                emittedAny = true;
             }
         } catch (IOException e) {
             if (running) {

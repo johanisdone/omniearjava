@@ -42,11 +42,21 @@ public final class RollingAudioBuffer {
      * have arrived.
      */
     public synchronized float[] lastWindow(int n) {
+        return windowEndingAt(totalWritten, n);
+    }
+
+    /**
+     * Return the {@code n} samples ending exactly at (exclusive) global index
+     * {@code endExclusive}. Positions before the start of the stream are
+     * zero-filled. The range must lie within the retained window
+     * ({@code endExclusive - n >= totalWritten - capacity}).
+     */
+    public synchronized float[] windowEndingAt(long endExclusive, int n) {
         if (n > capacity) {
             throw new IllegalArgumentException("requested " + n + " > capacity " + capacity);
         }
         float[] out = new float[n];
-        long start = totalWritten - n;
+        long start = endExclusive - n;
         for (int i = 0; i < n; i++) {
             long idx = start + i;
             out[i] = idx < 0 ? 0f : data[(int) Math.floorMod(idx, capacity)];

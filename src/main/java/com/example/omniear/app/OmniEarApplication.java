@@ -308,7 +308,8 @@ public final class OmniEarApplication {
             mapped = mapped.withScore(ThreatCategory.GLASS_BREAK, 1f, "glass(hf)");
             LOG.debug("glass-break detector fired (t={}ms)", window.timestampMs());
         }
-        List<ThreatEvent> events = engine.update(window.timestampMs(), mapped);
+        List<ThreatEvent> events =
+                engine.update(window.timestampMs(), mapped, AudioPreprocessor.rmsDb(window.samples()));
         for (ThreatEvent event : events) {
             long latencyMs = event.emittedWallMs() - window.capturedWallMs();
             LOG.info("event {} score={} (infer={}ms, capture->alert={}ms)",

@@ -7,8 +7,12 @@ package com.example.omniear.detection;
 public enum ThreatCategory {
     NORMAL,
     SCREAM_DISTRESS,
-    GUNSHOT,
-    EXPLOSION,
+    /**
+     * Gunshots and explosions share the same acoustic signature family (a loud,
+     * broadband transient) and the model frequently confuses the two, so they are
+     * treated as one P0 category: the score is the max of the two model labels.
+     */
+    GUNSHOT_EXPLOSION,
     IMPACT_CRASH,
     SIREN,
     GLASS_BREAK

@@ -43,7 +43,7 @@ class EvaluationMetricsTest {
         cfg.uncertainFloor = 0.3f;
         cfg.categories = List.of(
                 new CategoryRule(ThreatCategory.SIREN, Map.of("siren", 1.0f), 0.6f, 2, 10000),
-                new CategoryRule(ThreatCategory.GUNSHOT, Map.of("gunshot", 1.0f), 0.9f, 2, 10000));
+                new CategoryRule(ThreatCategory.GUNSHOT_EXPLOSION, Map.of("gunshot", 1.0f), 0.9f, 2, 10000));
 
         EvaluationReport report = EvaluationReport.compute(results, modelConfig, cfg);
 

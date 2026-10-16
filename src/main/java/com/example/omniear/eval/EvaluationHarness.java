@@ -66,7 +66,8 @@ public final class EvaluationHarness {
                     ModelPrediction prediction = model.predict(window);
                     long t3 = System.nanoTime();
                     long endMs = (o + win) * 1000L / modelConfig.sr;
-                    events.addAll(engine.update(endMs, mapper.map(prediction)));
+                    events.addAll(engine.update(endMs, mapper.map(prediction),
+                            AudioPreprocessor.rmsDb(window)));
                     long t4 = System.nanoTime();
                     preprocessNanos += t2 - t1;
                     inferenceNanos += t3 - t2;

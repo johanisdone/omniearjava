@@ -154,6 +154,19 @@ public final class AudioPreprocessor {
         return out;
     }
 
+    /** RMS level of a window in dBFS ({@code -inf} for silence). */
+    public static float rmsDb(float[] samples) {
+        if (samples.length == 0) {
+            return Float.NEGATIVE_INFINITY;
+        }
+        double sumSq = 0;
+        for (float s : samples) {
+            sumSq += (double) s * s;
+        }
+        double rms = Math.sqrt(sumSq / samples.length);
+        return (float) (20 * Math.log10(Math.max(rms, 1e-9)));
+    }
+
     /** All overlapping windows for a signal, per {@link ModelConfig}. */
     public static float[][] windows(float[] samples, ModelConfig config) {
         int win = config.windowSamples();

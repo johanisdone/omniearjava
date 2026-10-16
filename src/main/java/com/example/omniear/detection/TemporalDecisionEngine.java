@@ -62,6 +62,21 @@ public final class TemporalDecisionEngine {
     }
 
     public List<ThreatEvent> update(long timestampMs, MappedScores mapped) {
+        return update(timestampMs, mapped, Float.NaN);
+    }
+
+    /**
+     * As {@link #update(long, MappedScores)} but with the window's RMS level in
+     * dBFS. Windows quieter than {@link DetectionConfig#noiseGateDb} are treated
+     * as background and cannot raise an alert; pass {@link Float#NaN} to disable
+     * the gate for this window.
+     */
+    public List<ThreatEvent> update(long timestampMs, MappedScores mapped, float rmsDb) {
+        if (!Float.isNaN(rmsDb) && rmsDb < config.noiseGateDb) {
+            LOG.debug("gated background window t={}ms rms={}dB", timestampMs,
+                    String.format("%.1f", rmsDb));
+            return List.of();
+        }
         List<ThreatEvent> events = new ArrayList<>();
         long nowWall = System.currentTimeMillis();
 

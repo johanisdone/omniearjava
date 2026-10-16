@@ -37,16 +37,42 @@ public final class MicrophoneSource implements AudioSource {
 
     private static TargetDataLine lineFromMixer(String deviceName, DataLine.Info info)
             throws LineUnavailableException {
+        String needle = deviceName.toLowerCase();
+        Mixer.Info best = null;
+        int bestScore = 0;
         for (Mixer.Info mi : AudioSystem.getMixerInfo()) {
-            if (!mi.getName().toLowerCase().contains(deviceName.toLowerCase())) {
+            int score = matchScore(mi.getName().toLowerCase(), needle);
+            if (score == 0 || score <= bestScore) {
                 continue;
             }
-            Mixer mixer = AudioSystem.getMixer(mi);
-            if (mixer.isLineSupported(info)) {
-                return (TargetDataLine) mixer.getLine(info);
+            if (AudioSystem.getMixer(mi).isLineSupported(info)) {
+                bestScore = score;
+                best = mi;
             }
         }
-        throw new LineUnavailableException("no capture device matching '" + deviceName + "'");
+        if (best == null) {
+            throw new LineUnavailableException("no capture device matching '" + deviceName + "'");
+        }
+        LOG.info("capture device '{}' matched mixer '{}'", deviceName, best.getName());
+        return (TargetDataLine) AudioSystem.getMixer(best).getLine(info);
+    }
+
+    /**
+     * Ranks a mixer name against a needle: exact beats prefix beats substring, and
+     * Windows "Port ..." aliases are penalised so the real device wins.
+     */
+    private static int matchScore(String name, String needle) {
+        int score;
+        if (name.equals(needle)) {
+            score = 300;
+        } else if (name.startsWith(needle)) {
+            score = 200;
+        } else if (name.contains(needle)) {
+            score = 100;
+        } else {
+            return 0;
+        }
+        return name.startsWith("port ") ? score - 50 : score;
     }
 
     /** Names of mixers that can capture, for {@code --list-devices}. */

@@ -4,7 +4,7 @@ Real-time acoustic threat detection for the desktop.
 
 OmniEar listens to a microphone (or replays a WAV), classifies short audio
 windows with an ONNX **CED-mini** audio model, maps the model's 17 labels onto
-**6 application threat categories**, and applies explainable temporal decision
+**5 application threat categories**, and applies explainable temporal decision
 logic before raising a prioritised alert. It is a fully offline **Java 21 +
 Swing** desktop application for Windows, macOS and Linux. Audio is processed in
 memory and never written to disk.
@@ -12,8 +12,13 @@ memory and never written to disk.
 - **Live dashboard** - device picker, level meter, per-category score bars with
   threshold markers, a five-second input diagnostic, and a prioritised alert
   history with CSV export.
-- **Six categories** - scream/distress, gunshot, explosion, impact/crash, siren,
-  glass break.
+- **Priority alarms** - each priority has its own synthesized alarm tone (P0
+  urgent two-tone, P1 double beep, P2 single soft beep) plus a blinking header
+  light (fast red / medium amber / slow blue). Each alert sounds once; click the
+  light to dismiss it.
+- **Five categories** - scream/distress, gunshot/explosion, impact/crash, siren,
+  glass break. Gunshots and explosions are merged into one P0 category (the score
+  is the max of the two model labels) because the model frequently confuses them.
 - **Explainable decision layer** - per-category thresholds, optional moving-average
   score smoothing, and N-of-M window confirmation with a cooldown.
 - **Glass-break detector** - a dedicated high-frequency DSP heuristic that runs
@@ -40,14 +45,17 @@ via GitHub Pages).
 
 ## Categories and alert priorities
 
-| Category        | Priority | Notes |
-|-----------------|----------|-------|
-| GUNSHOT         | P0       | Critical |
-| EXPLOSION       | P0       | Critical |
-| SCREAM_DISTRESS | P1       | High |
-| IMPACT_CRASH    | P1       | High |
-| GLASS_BREAK     | P1       | High (model + DSP heuristic) |
-| SIREN           | P4       | Informational |
+| Category          | Priority | Notes |
+|-------------------|----------|-------|
+| GUNSHOT_EXPLOSION | P0       | Critical (max of the gunshot/explosion labels) |
+| SCREAM_DISTRESS   | P1       | High |
+| IMPACT_CRASH      | P1       | High |
+| GLASS_BREAK       | P1       | High (model + DSP heuristic) |
+| SIREN             | P2       | Informational |
+
+Windows quieter than the **noise gate** (`noiseGateDb`, default -55 dBFS) are
+treated as background and cannot raise an alert, which suppresses false positives
+from electrical hiss and room tone.
 
 ## Requirements
 
@@ -65,7 +73,7 @@ java -jar target/omniear.jar --gui
 
 On Windows use `mvnw.cmd` instead of `./mvnw`.
 
-Run the test suite (27 tests, including an ONNX parity check):
+Run the test suite (30 tests, including an ONNX parity check):
 
 ```bash
 ./mvnw test
@@ -87,7 +95,9 @@ Run the test suite (27 tests, including an ONNX parity check):
 ```
 
 `[device]` is a case-insensitive substring matched against the capture-device
-names; omit it to use the system default input.
+names; omit it to use the system default input. The most specific match wins (an
+exact name beats a prefix, which beats a substring) and Windows `Port ...` aliases
+are deprioritised, so naming `External Microphone` selects the real device.
 
 ## How it works
 
@@ -98,12 +108,14 @@ names; omit it to use the system default input.
 3. **Backbone** - `models/ced-mini.onnx` maps a `waveform[*, 32000]` window to
    527 class logits.
 4. **Head** - `models/onnx/head.onnx` maps the logits to 17 probabilities.
-5. **Map** - `ScoreMapper` reduces the 17 labels to 6 category scores
-   (weighted max).
+5. **Map** - `ScoreMapper` reduces the 17 labels to 5 category scores
+   (weighted max; gunshot and explosion share one P0 category).
 6. **Glass DSP** - `GlassBreakDetector` may raise the glass score to 1.0.
-7. **Decide** - `TemporalDecisionEngine` applies the optional score smoothing,
-   per-category thresholds, N-of-M confirmation and cooldown, then emits a
-   prioritised `ThreatEvent`.
+7. **Decide** - `TemporalDecisionEngine` drops windows below the noise gate,
+   applies the optional score smoothing, per-category thresholds, N-of-M
+   confirmation and cooldown, then emits a prioritised `ThreatEvent`.
+8. **Alarm** - the matching priority tone plays once and the header light blinks
+   in the priority colour until dismissed.
 
 ## Model
 
@@ -130,8 +142,8 @@ Reported on the bundled real-audio evaluation set:
 
 | Metric        | Honest out-of-fold | In-sample harness |
 |---------------|--------------------|-------------------|
-| Clip accuracy | 0.889              | 0.990             |
-| Macro F1      | 0.810              | 0.992             |
+| Clip accuracy | 0.889              | 0.988             |
+| Macro F1      | 0.810              | 0.993             |
 
 The out-of-fold figures come from `scripts/oof_decision_eval.py` (5-fold,
 clip-disjoint) and are the honest, non-leaked numbers; the harness figures score
@@ -145,10 +157,10 @@ src/main/java/com/example/omniear/
   audio/       capture, resampling, rolling window buffer
   detection/   score mapping, temporal decision engine, glass detector
   model/       ONNX backbone + head, preprocessing
-  ui/          Swing dashboard
+  ui/          Swing dashboard, priority alarms and indicator light
   eval/        evaluation harness
 models/        ONNX backbone + head and upstream config
-config/        categories.json (thresholds, smoothing, confirmation)
+config/        categories.json (thresholds, smoothing, confirmation, noise gate)
 scripts/       feature extraction, head training, decision tuning
 docs/          model contract, licensing notes, GitHub Pages site
 ```

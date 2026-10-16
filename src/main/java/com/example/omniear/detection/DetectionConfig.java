@@ -28,6 +28,14 @@ public final class DetectionConfig {
     /** Windows whose top category score is below this are considered "quiet". */
     public float uncertainFloor = 0.3f;
 
+    /**
+     * Noise gate: windows whose RMS level is below this many dBFS are treated as
+     * background (electrical hiss / room tone) and cannot raise an alert. Guards
+     * against the model hallucinating events on near-silent input. Set very low
+     * (e.g. -120) to disable.
+     */
+    public float noiseGateDb = -55f;
+
     private static final Gson GSON = new GsonBuilder()
             // config writes transform kinds in lower case ("movavg"); Gson's default
             // enum adapter is case-sensitive and would silently map it to null.

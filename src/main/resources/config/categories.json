@@ -1,5 +1,6 @@
 {
   "uncertainFloor": 0.3,
+  "noiseGateDb": -55,
   "categories": [
     {
       "category": "SCREAM_DISTRESS",
@@ -9,18 +10,9 @@
       "cooldownMs": 5000
     },
     {
-      "category": "GUNSHOT",
-      "labels": { "gunshot": 1.0 },
-      "threshold": 0.586,
-      "confirmWindows": 1,
-      "cooldownMs": 3000
-    },
-    {
-      "category": "EXPLOSION",
-      "labels": { "explosion": 1.0 },
-      "threshold": 0.71,
-      "transform": "movavg",
-      "param": 3,
+      "category": "GUNSHOT_EXPLOSION",
+      "labels": { "gunshot": 1.0, "explosion": 1.0 },
+      "threshold": 0.9,
       "confirmWindows": 1,
       "cooldownMs": 5000
     },

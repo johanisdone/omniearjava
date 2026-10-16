@@ -79,8 +79,9 @@ import org.slf4j.LoggerFactory;
  *   <li><b>Dashboard</b> - device picker, mode/readiness banner, input level
  *       meter, a five-second microphone input diagnostic and per-category score
  *       bars with threshold markers.</li>
- *   <li><b>Alert History</b> - rolling alert log (P0/P1/P4 priorities) with a
- *       UTF-8 CSV export.</li>
+ *   <li><b>Alert History</b> - rolling alert log (P0/P1/P2 priorities) with a
+ *       UTF-8 CSV export. Each priority has its own alarm tone and a blinking
+ *       indicator light (P0 fast red, P1 medium amber, P2 slow blue).</li>
  * </ul>
  *
  * <p>The model, decision engine and capture run on background threads; every
@@ -113,14 +114,12 @@ public final class OmniEarFrame extends JFrame {
 
     static {
         CATEGORY_COLORS.put(ThreatCategory.SCREAM_DISTRESS, new Color(0xff9f43));
-        CATEGORY_COLORS.put(ThreatCategory.GUNSHOT, new Color(0xef5350));
-        CATEGORY_COLORS.put(ThreatCategory.EXPLOSION, new Color(0xff7043));
+        CATEGORY_COLORS.put(ThreatCategory.GUNSHOT_EXPLOSION, new Color(0xef5350));
         CATEGORY_COLORS.put(ThreatCategory.IMPACT_CRASH, new Color(0xffd54f));
         CATEGORY_COLORS.put(ThreatCategory.SIREN, new Color(0x5b8cff));
         CATEGORY_COLORS.put(ThreatCategory.GLASS_BREAK, new Color(0x26c6da));
         CATEGORY_NAMES.put(ThreatCategory.SCREAM_DISTRESS, "SCREAM / DISTRESS");
-        CATEGORY_NAMES.put(ThreatCategory.GUNSHOT, "GUNSHOT");
-        CATEGORY_NAMES.put(ThreatCategory.EXPLOSION, "EXPLOSION");
+        CATEGORY_NAMES.put(ThreatCategory.GUNSHOT_EXPLOSION, "GUNSHOT / EXPLOSION");
         CATEGORY_NAMES.put(ThreatCategory.IMPACT_CRASH, "IMPACT / CRASH");
         CATEGORY_NAMES.put(ThreatCategory.SIREN, "SIREN");
         CATEGORY_NAMES.put(ThreatCategory.GLASS_BREAK, "GLASS BREAK");
@@ -170,6 +169,11 @@ public final class OmniEarFrame extends JFrame {
     private final AtomicLong dropped = new AtomicLong();
     private final AtomicLong alerts = new AtomicLong();
     private final Timer bannerReset;
+
+    private final AlarmPlayer alarmPlayer = new AlarmPlayer();
+    private final AlertLight alertLight = new AlertLight(this::dismissAlert);
+    /** Priority of the alert currently indicated by {@link #alertLight}, or null. */
+    private AlertPriority activePriority;
 
     public OmniEarFrame(ModelConfig modelConfig, DetectionConfig detectionConfig, Path modelsDir) {
         super("OmniEar - acoustic threat detection");
@@ -259,9 +263,15 @@ public final class OmniEarFrame extends JFrame {
         nav.add(Box.createHorizontalStrut(8));
         nav.add(navAlerts);
 
+        JPanel right = transparent();
+        right.setLayout(new BoxLayout(right, BoxLayout.X_AXIS));
+        right.add(alertLight);
+        right.add(Box.createHorizontalStrut(12));
+        right.add(nav);
+
         JPanel top = transparent(new BorderLayout(12, 0));
         top.add(titleBlock, BorderLayout.WEST);
-        top.add(nav, BorderLayout.EAST);
+        top.add(right, BorderLayout.EAST);
 
         JLabel deviceLabel = new JLabel("Microphone");
         deviceLabel.setForeground(MUTED);
@@ -458,23 +468,25 @@ public final class OmniEarFrame extends JFrame {
         return card;
     }
 
-    // ---- journal / priorities ----------------------------------------------    /** Local alert priority: P0 critical, P1 high, P4 informational. */
+    // ---- journal / priorities ----------------------------------------------    /** Local alert priority label: P0 critical, P1 high, P2 informational. */
     private static String priority(ThreatCategory category) {
-        return switch (category) {
-            case GUNSHOT, EXPLOSION -> "P0";
-            case SCREAM_DISTRESS, IMPACT_CRASH, GLASS_BREAK -> "P1";
-            case SIREN -> "P4";
-            default -> "--";
-        };
+        AlertPriority p = AlertPriority.of(category);
+        return p == null ? "--" : p.label();
     }
 
     private static Color priorityColor(String p) {
         return switch (p) {
             case "P0" -> ALERT;
             case "P1" -> WARN;
-            case "P4" -> ACCENT;
+            case "P2" -> ACCENT;
             default -> MUTED;
         };
+    }
+
+    /** Foreground that stays readable on a solid {@code bg} fill. */
+    private static Color readableOn(Color bg) {
+        double lum = 0.299 * bg.getRed() + 0.587 * bg.getGreen() + 0.114 * bg.getBlue();
+        return lum > 150 ? BG : Color.WHITE;
     }
 
     // ---- pipeline -----------------------------------------------------------
@@ -485,13 +497,41 @@ public final class OmniEarFrame extends JFrame {
             return;
         }
         String needle = substring.toLowerCase();
+        int bestIndex = -1;
+        int bestScore = 0;
         for (int i = 0; i < deviceCombo.getItemCount(); i++) {
             String item = deviceCombo.getItemAt(i);
-            if (item != null && item.toLowerCase().contains(needle)) {
-                deviceCombo.setSelectedIndex(i);
-                return;
+            if (item == null) {
+                continue;
+            }
+            int score = deviceMatchScore(item.toLowerCase(), needle);
+            if (score > bestScore) {
+                bestScore = score;
+                bestIndex = i;
             }
         }
+        if (bestIndex >= 0) {
+            deviceCombo.setSelectedIndex(bestIndex);
+        }
+    }
+
+    /**
+     * Ranks a device name against a needle so the most specific match wins: an
+     * exact name beats a prefix, which beats a bare substring. Windows "Port ..."
+     * aliases are penalised so the real capture device is preferred.
+     */
+    private static int deviceMatchScore(String name, String needle) {
+        int score;
+        if (name.equals(needle)) {
+            score = 300;
+        } else if (name.startsWith(needle)) {
+            score = 200;
+        } else if (name.contains(needle)) {
+            score = 100;
+        } else {
+            return 0;
+        }
+        return name.startsWith("port ") ? score - 50 : score;
     }
 
     /** Starts listening if currently idle. Intended to be called on the EDT. */
@@ -579,10 +619,10 @@ public final class OmniEarFrame extends JFrame {
             if (GLASS_DETECTOR.detects(raw)) {
                 mapped = mapped.withScore(ThreatCategory.GLASS_BREAK, 1f, "glass(hf)");
             }
-            List<ThreatEvent> events = engine.update(window.timestampMs(), mapped);
+            float db = (float) (20 * Math.log10(Math.max(rms(raw), 1e-6)));
+            List<ThreatEvent> events = engine.update(window.timestampMs(), mapped, db);
             windows.incrementAndGet();
 
-            float db = (float) (20 * Math.log10(Math.max(rms(raw), 1e-6)));
             float peakDb = (float) (20 * Math.log10(Math.max(peak(raw), 1e-6)));
             float level = normalizeDb(db);
             float peakLevel = normalizeDb(peakDb);
@@ -599,10 +639,18 @@ public final class OmniEarFrame extends JFrame {
         for (Map.Entry<ThreatCategory, ScoreBar> e : bars.entrySet()) {
             e.getValue().setScore(mapped.score(e.getKey()));
         }
+        AlertPriority top = null;
         for (ThreatEvent event : events) {
             alerts.incrementAndGet();
             addAlertRow(event);
             flashAlert(event);
+            AlertPriority p = AlertPriority.of(event.category());
+            if (p != null && (top == null || p.atLeast(top))) {
+                top = p;
+            }
+        }
+        if (top != null) {
+            raiseAlert(top);
         }
         stats.setText(String.format("windows=%d  dropped=%d  alerts=%d",
                 windows.get(), dropped.get(), alerts.get()));
@@ -644,9 +692,27 @@ public final class OmniEarFrame extends JFrame {
 
     private void flashAlert(ThreatEvent event) {
         String name = CATEGORY_NAMES.getOrDefault(event.category(), event.category().name());
+        AlertPriority p = AlertPriority.of(event.category());
+        Color bg = p == null ? ALERT : p.color();
+        Color fg = readableOn(bg);
         banner.setStatus(String.format("%s  \u26a0  %s   %.2f",
-                priority(event.category()), name, event.score()), ALERT, Color.WHITE, Color.WHITE);
+                priority(event.category()), name, event.score()), bg, fg, fg);
         bannerReset.restart();
+    }
+
+    /** Sounds the alarm once and lights the blinking indicator for {@code p}. */
+    private void raiseAlert(AlertPriority p) {
+        alarmPlayer.play(p);
+        if (activePriority == null || p.atLeast(activePriority)) {
+            activePriority = p;
+            alertLight.activate(p);
+        }
+    }
+
+    /** Clears the active alert and stops the blinking indicator. */
+    private void dismissAlert() {
+        activePriority = null;
+        alertLight.clear();
     }
 
     private void showMonitoringBanner() {
@@ -659,7 +725,7 @@ public final class OmniEarFrame extends JFrame {
     }
 
     private static String prioritySummary() {
-        return "P0 gunshot/explosion  \u00b7  P1 scream/impact/glass  \u00b7  P4 siren";
+        return "P0 gunshot/explosion  \u00b7  P1 scream/impact/glass  \u00b7  P2 siren";
     }
 
     private void showIdleBanner() {
@@ -684,6 +750,7 @@ public final class OmniEarFrame extends JFrame {
         capture = null;
         source = null;
         worker = null;
+        dismissAlert();
         setRunningUi(false);
         status.setText(message);
         stats.setText(String.format("windows=%d  dropped=%d  alerts=%d",
@@ -745,6 +812,7 @@ public final class OmniEarFrame extends JFrame {
             cap.close();
         }
         closeModel();
+        alarmPlayer.shutdown();
         dispose();
         System.exit(0);
     }
@@ -1024,6 +1092,73 @@ public final class OmniEarFrame extends JFrame {
             }
             g2.dispose();
             super.paintComponent(g);
+        }
+    }
+
+    /**
+     * Round indicator light that blinks in the active alert's colour. Idle it is
+     * a steady green dot; while an alert is active it blinks (fast red for P0,
+     * medium amber for P1, slow blue for P2). Clicking it dismisses the alert.
+     */
+    private static final class AlertLight extends JComponent {
+        private final Timer blink;
+        private AlertPriority priority;
+        private boolean on = true;
+
+        AlertLight(Runnable onDismiss) {
+            setOpaque(false);
+            setPreferredSize(new Dimension(40, 40));
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            setToolTipText("Monitoring - no active alert");
+            addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    if (priority != null) {
+                        onDismiss.run();
+                    }
+                }
+            });
+            blink = new Timer(300, e -> {
+                on = !on;
+                repaint();
+            });
+        }
+
+        void activate(AlertPriority p) {
+            this.priority = p;
+            this.on = true;
+            setToolTipText(p.label() + " active - click to dismiss");
+            repaint(); // show the light immediately, before the first blink toggle
+            blink.setInitialDelay(p.blinkMs());
+            blink.setDelay(p.blinkMs());
+            blink.restart();
+        }
+
+        void clear() {
+            priority = null;
+            blink.stop();
+            on = true;
+            setToolTipText("Monitoring - no active alert");
+            repaint();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            int d = Math.min(getWidth(), getHeight()) - 10;
+            int x = (getWidth() - d) / 2;
+            int y = (getHeight() - d) / 2;
+            Color base = priority == null ? OK : priority.color();
+            if (priority != null && on) {
+                g2.setColor(new Color(base.getRed(), base.getGreen(), base.getBlue(), 70));
+                g2.fillOval(x - 4, y - 4, d + 8, d + 8);
+            }
+            g2.setColor(priority != null && !on ? base.darker().darker() : base);
+            g2.fillOval(x, y, d, d);
+            g2.setColor(BORDER);
+            g2.drawOval(x, y, d, d);
+            g2.dispose();
         }
     }
 

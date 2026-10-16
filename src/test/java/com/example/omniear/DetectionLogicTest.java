@@ -52,9 +52,9 @@ class DetectionLogicTest {
     @Test
     void requiresConsecutiveWindowsThenCooldown() {
         DetectionConfig cfg = config(
-                new CategoryRule(ThreatCategory.GUNSHOT, Map.of("gunshot", 1.0f), 0.5f, 2, 5000));
+                new CategoryRule(ThreatCategory.GUNSHOT_EXPLOSION, Map.of("gunshot", 1.0f), 0.5f, 2, 5000));
         TemporalDecisionEngine engine = new TemporalDecisionEngine(cfg);
-        MappedScores hot = mapped(ThreatCategory.GUNSHOT, 0.6f);
+        MappedScores hot = mapped(ThreatCategory.GUNSHOT_EXPLOSION, 0.6f);
 
         assertTrue(engine.update(0, hot).isEmpty(), "one window is not enough");
         assertEquals(1, engine.update(1000, hot).size(), "second consecutive window fires");
@@ -84,10 +84,10 @@ class DetectionLogicTest {
     @Test
     void twoOfThreeWindowsFires() {
         DetectionConfig cfg = config(
-                new CategoryRule(ThreatCategory.GUNSHOT, Map.of("gunshot", 1.0f), 0.5f, 3, 2, 0));
+                new CategoryRule(ThreatCategory.GUNSHOT_EXPLOSION, Map.of("gunshot", 1.0f), 0.5f, 3, 2, 0));
         TemporalDecisionEngine engine = new TemporalDecisionEngine(cfg);
-        MappedScores hot = mapped(ThreatCategory.GUNSHOT, 0.9f);
-        MappedScores cold = mapped(ThreatCategory.GUNSHOT, 0.1f);
+        MappedScores hot = mapped(ThreatCategory.GUNSHOT_EXPLOSION, 0.9f);
+        MappedScores cold = mapped(ThreatCategory.GUNSHOT_EXPLOSION, 0.1f);
 
         assertTrue(engine.update(0, hot).isEmpty());
         assertTrue(engine.update(1000, cold).isEmpty(), "one of three is not enough");
@@ -114,6 +114,28 @@ class DetectionLogicTest {
         // The same spike sustains once neighbours rise, so it fires.
         assertEquals(1, engine.update(3000, mapped(ThreatCategory.SIREN, 0.9f)).size(),
                 "sustained (0.1+0.9+0.9)/3 = 0.63 fires");
+    }
+
+    @Test
+    void noiseGateSuppressesBackgroundButAllowsLoudWindows() {
+        DetectionConfig cfg = config(
+                new CategoryRule(ThreatCategory.GUNSHOT_EXPLOSION, Map.of("gunshot", 1.0f), 0.5f, 1, 0));
+        cfg.noiseGateDb = -55f;
+        TemporalDecisionEngine engine = new TemporalDecisionEngine(cfg);
+        MappedScores hot = mapped(ThreatCategory.GUNSHOT_EXPLOSION, 0.9f);
+
+        assertTrue(engine.update(0, hot, -80f).isEmpty(), "hiss below the gate is ignored");
+        assertEquals(1, engine.update(1000, hot, -20f).size(), "loud window still fires");
+    }
+
+    @Test
+    void nanLevelDisablesNoiseGate() {
+        DetectionConfig cfg = config(
+                new CategoryRule(ThreatCategory.GUNSHOT_EXPLOSION, Map.of("gunshot", 1.0f), 0.5f, 1, 0));
+        cfg.noiseGateDb = -55f;
+        TemporalDecisionEngine engine = new TemporalDecisionEngine(cfg);
+        assertEquals(1, engine.update(0, mapped(ThreatCategory.GUNSHOT_EXPLOSION, 0.9f)).size(),
+                "no level supplied means the gate does not apply");
     }
 
     private static MappedScores mapped(ThreatCategory category, float score) {        Map<ThreatCategory, Float> scores = new EnumMap<>(ThreatCategory.class);

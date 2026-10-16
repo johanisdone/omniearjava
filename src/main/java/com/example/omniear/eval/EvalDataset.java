@@ -30,7 +30,7 @@ public final class EvalDataset {
                 throw new IllegalArgumentException("bad row in " + csv + ": " + line);
             }
             Path file = base.resolve(parts[0].trim()).normalize();
-            ThreatCategory label = ThreatCategory.valueOf(parts[1].trim().toUpperCase());
+            ThreatCategory label = parseLabel(parts[1].trim());
             long onset = parts.length >= 3 && !parts[2].isBlank() ? Long.parseLong(parts[2].trim()) : -1;
             cases.add(new EvalCase(file, label, onset));
         }
@@ -38,5 +38,18 @@ public final class EvalDataset {
             throw new IllegalArgumentException("no cases found in " + csv);
         }
         return cases;
+    }
+
+    /**
+     * Maps a dataset label to a {@link ThreatCategory}. The legacy labels
+     * {@code GUNSHOT} and {@code EXPLOSION} are folded into the merged
+     * {@link ThreatCategory#GUNSHOT_EXPLOSION} category.
+     */
+    private static ThreatCategory parseLabel(String raw) {
+        String name = raw.toUpperCase();
+        if (name.equals("GUNSHOT") || name.equals("EXPLOSION")) {
+            return ThreatCategory.GUNSHOT_EXPLOSION;
+        }
+        return ThreatCategory.valueOf(name);
     }
 }
